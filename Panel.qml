@@ -70,6 +70,7 @@ Panel {
     cursorRow = "enabled"
     cursorCol = 0
     cursorActive = false
+    cursorByMouse = false
   }
 
   // Pick up an install finishing in the terminal.
@@ -234,7 +235,12 @@ Panel {
     return cursorActive && cursorRow === id ? cursorCol : -1
   }
 
+  // Set when the mouse moved the cursor. Hover never scrolls the panel:
+  // scrolling would slide a different row under the pointer.
+  property bool cursorByMouse: false
+
   function point(id, col) {
+    cursorByMouse = true
     cursorActive = true
     cursorRow = id
     cursorCol = col || 0
@@ -298,7 +304,7 @@ Panel {
   // Keep the keyboard target inside the viewport when the panel scrolls.
   function ensureCursorVisible(item) {
     var scrollArea = panel.loadedContent ? panel.loadedContent.scrollArea : null
-    if (!item || !scrollArea) return
+    if (cursorByMouse || !item || !scrollArea) return
     var flick = scrollArea.contentItem
     if (!flick || flick.contentY === undefined) return
     var pt = item.mapToItem(flick.contentItem || flick, 0, 0)
@@ -351,6 +357,7 @@ Panel {
       implicitHeight: panelColumn.implicitHeight
       anchors.fill: parent
       onMoveRequested: function(dx, dy) {
+        root.cursorByMouse = false
         if (!root.cursorActive) { root.cursorActive = true; return }
         root.moveCursor(dx, dy)
       }
@@ -1055,10 +1062,14 @@ Panel {
     readonly property bool hasPreview: preview.hasRows
     readonly property real cardWidth: hasPreview ? preview.width : Style.space(92)
     readonly property real cardHeight: hasPreview ? preview.height : Style.space(54)
-    readonly property string hotPosition: root.cursorActive && (root.cursorRow === "pos-top" || root.cursorRow === "pos-bottom")
+    // From the mouse, the ghost shows only while the pointer is on the picker.
+    readonly property string hotPosition: root.cursorActive && (!root.cursorByMouse || pickerHover.hovered)
+      && (root.cursorRow === "pos-top" || root.cursorRow === "pos-bottom")
       ? root.positionAt(root.cursorRow, root.cursorCol) : ""
 
     onHotPositionChanged: if (hotPosition !== "") root.ensureCursorVisible(picker)
+
+    HoverHandler { id: pickerHover }
 
     function slotX(position, w) {
       var a = Metrics.anchors(position)
