@@ -26,12 +26,12 @@ var METRICS = GROUPS.reduce(function(all, group) { return all.concat(group.metri
 var DEFAULTS = {
   enabled: false,
   position: "top-left",
-  metrics: ["cpuLoad", "cpuTemp", "gpuLoad", "gpuTemp", "ram", "time"],
+  metrics: ["cpuLoad", "cpuTemp", "gpuLoad", "gpuTemp", "ram", "vram"],
   layout: "stack",
   scale: 1,
-  opacity: 0.8,
-  fullscreenOnly: false,
-  interval: 1,
+  opacity: 0,
+  fullscreenOnly: true,
+  interval: 2,
   gpu: "auto",
   screen: ""
 }
@@ -69,7 +69,7 @@ function sanitize(raw) {
     layout: LAYOUTS.indexOf(src.layout) !== -1 ? src.layout : DEFAULTS.layout,
     scale: stepped(src.scale, SCALE_MIN, SCALE_MAX, 0.05, DEFAULTS.scale),
     opacity: stepped(src.opacity, 0, 1, 0.05, DEFAULTS.opacity),
-    fullscreenOnly: src.fullscreenOnly === true,
+    fullscreenOnly: typeof src.fullscreenOnly === "boolean" ? src.fullscreenOnly : DEFAULTS.fullscreenOnly,
     interval: INTERVALS.indexOf(Number(src.interval)) !== -1 ? Number(src.interval) : DEFAULTS.interval,
     gpu: GPU_SLOT.test(gpu) ? gpu : "auto",
     screen: screen.length <= SCREEN_MAX && /^[\x21-\x7e]*$/.test(screen) ? screen : ""

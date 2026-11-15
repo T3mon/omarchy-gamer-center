@@ -124,14 +124,28 @@ Panel {
     return strings.t("status.on").arg(names.join(", "))
   }
 
-  // Look and Behavior start folded; the choice lasts until the shell restarts.
-  property bool lookOpen: false
-  property bool behaviorOpen: false
+  // Which sections are unfolded. Look and Behavior start folded; the choice
+  // lasts until the shell restarts.
+  property var folds: ({ position: true, stats: true, look: false, behavior: false, fps: true })
+  readonly property bool positionOpen: folds.position
+  readonly property bool statsOpen: folds.stats
+  readonly property bool lookOpen: folds.look
+  readonly property bool behaviorOpen: folds.behavior
+  readonly property bool fpsOpen: folds.fps
 
   function toggleFold(id) {
-    if (id === "fold-look") lookOpen = !lookOpen
-    else if (id === "fold-behavior") behaviorOpen = !behaviorOpen
+    var name = id.replace(/^fold-/, "")
+    if (!(name in folds)) return
+    var next = {}
+    for (var k in folds) next[k] = folds[k]
+    next[name] = !next[name]
+    folds = next
   }
+
+  readonly property string positionSummary: strings.t("pos." + config.position)
+  readonly property string statsSummary: strings.t("fold.statsCount").arg(Commons.I18n.formatNumber(config.metrics.length))
+  readonly property string fpsSummary: !mango.installed ? strings.t("fold.fpsMissing")
+    : (mango.managed ? strings.t("fold.fpsOn") : strings.t("fold.fpsOff"))
 
   readonly property string lookSummary: {
     var layout = root.layoutOptions.filter(function(o) { return o.value === config.layout })
@@ -177,9 +191,13 @@ Panel {
   property bool cursorActive: false
 
   readonly property var navRows: {
-    var list = [{ id: "enabled", count: 1 }, { id: "pos-top", count: 3 }, { id: "pos-bottom", count: 3 }]
-    for (var i = 0; i < Metrics.GROUPS.length; i++)
-      list.push({ id: "metrics-" + Metrics.GROUPS[i].id, count: Metrics.GROUPS[i].metrics.length })
+    var list = [{ id: "enabled", count: 1 }, { id: "fold-position", count: 1 }]
+    if (positionOpen) list.push({ id: "pos-top", count: 3 }, { id: "pos-bottom", count: 3 })
+    list.push({ id: "fold-stats", count: 1 })
+    if (statsOpen) {
+      for (var i = 0; i < Metrics.GROUPS.length; i++)
+        list.push({ id: "metrics-" + Metrics.GROUPS[i].id, count: Metrics.GROUPS[i].metrics.length })
+    }
     list.push({ id: "fold-look", count: 1 })
     if (lookOpen) {
       list.push({ id: "layout", count: Metrics.LAYOUTS.length })
@@ -193,10 +211,13 @@ Panel {
       if (gpuChoices.length > 2) list.push({ id: "gpu", count: gpuChoices.length })
       if (screenChoices.length > 2) list.push({ id: "screen", count: screenChoices.length })
     }
-    if (!mango.installed) list.push({ id: "install", count: 1 })
-    list.push({ id: "fps", count: 1 })
-    if (mango.managed) list.push({ id: "graph", count: 1 })
-    list.push({ id: "copy", count: 1 })
+    list.push({ id: "fold-fps", count: 1 })
+    if (fpsOpen) {
+      if (!mango.installed) list.push({ id: "install", count: 1 })
+      list.push({ id: "fps", count: 1 })
+      if (mango.managed) list.push({ id: "graph", count: 1 })
+      list.push({ id: "copy", count: 1 })
+    }
     return list
   }
 
@@ -422,13 +443,17 @@ Panel {
             width: parent.width
             spacing: Style.space(6)
 
-            SectionTitle {
+            FoldTitle {
+              rowId: "fold-position"
               text: strings.t("section.position")
               hint: strings.t("position.hint")
+              summary: root.positionSummary
+              open: root.positionOpen
             }
 
             ScreenPicker {
               width: parent.width
+              visible: root.positionOpen
             }
           }
 
@@ -439,13 +464,19 @@ Panel {
             width: parent.width
             spacing: Style.space(6)
 
-            SectionTitle { text: strings.t("section.stats") }
+            FoldTitle {
+              rowId: "fold-stats"
+              text: strings.t("section.stats")
+              summary: root.statsSummary
+              open: root.statsOpen
+            }
 
             Repeater {
               model: Metrics.GROUPS
 
               MetricGroupRow {
                 required property var modelData
+                visible: root.statsOpen
                 width: panelColumn.width
                 group: modelData
               }
@@ -522,7 +553,7 @@ Panel {
               open: root.behaviorOpen
             }
 
-            Toggle {
+            SmallToggle {
               id: fullscreenToggle
               width: parent.width
               visible: root.behaviorOpen
@@ -602,7 +633,17 @@ Panel {
             width: parent.width
             spacing: Style.space(6)
 
-            SectionTitle { text: strings.t("section.fps") }
+            FoldTitle {
+              rowId: "fold-fps"
+              text: strings.t("section.fps")
+              summary: root.fpsSummary
+              open: root.fpsOpen
+            }
+
+            Column {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: root.fpsOpen
 
             Item {
               width: parent.width
@@ -640,7 +681,7 @@ Panel {
               }
             }
 
-            Toggle {
+            SmallToggle {
               id: fpsToggle
               width: parent.width
               label: strings.t("fps.show")
@@ -654,7 +695,7 @@ Panel {
               onHovered: function(h) { if (h) root.point("fps", 0) }
             }
 
-            Toggle {
+            SmallToggle {
               id: graphToggle
               width: parent.width
               visible: root.mango.managed
@@ -704,6 +745,7 @@ Panel {
               font.bold: true
               wrapMode: Text.WordWrap
             }
+            }
           }
 
           Item {
@@ -717,36 +759,6 @@ Panel {
 
   // ------------------------------------------------------------ pieces
 
-  component SectionTitle: Item {
-    id: title
-    property string text: ""
-    property string hint: ""
-    width: parent ? parent.width : 0
-    implicitHeight: Math.max(titleHeader.implicitHeight, titleHint.implicitHeight)
-
-    PanelSectionHeader {
-      id: titleHeader
-      text: title.text
-      foreground: root.fg
-      fontFamily: root.fontFamily
-      anchors.left: parent.left
-      anchors.verticalCenter: parent.verticalCenter
-    }
-
-    Text {
-      id: titleHint
-      visible: title.hint !== ""
-      textFormat: Text.PlainText
-      text: title.hint
-      color: root.dimFg
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      anchors.right: parent.right
-      anchors.rightMargin: Style.space(6)
-      anchors.verticalCenter: parent.verticalCenter
-    }
-  }
-
   // A section header that folds its section: click or Enter flips it. Folded,
   // it shows a one-line summary of the current values.
   component FoldTitle: CursorSurface {
@@ -754,6 +766,7 @@ Panel {
     property string rowId: ""
     property string text: ""
     property string summary: ""
+    property string hint: ""
     property bool open: false
     width: parent ? parent.width : 0
     implicitHeight: Math.max(foldHeader.implicitHeight, foldChevron.implicitHeight) + Style.spacing.xs * 2
@@ -772,9 +785,9 @@ Panel {
     }
 
     Text {
-      visible: !fold.open
+      visible: text !== ""
       textFormat: Text.PlainText
-      text: fold.summary
+      text: fold.open ? fold.hint : fold.summary
       color: root.dimFg
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
@@ -807,6 +820,74 @@ Panel {
 
     HoverHandler {
       onHoveredChanged: if (hovered) root.point(fold.rowId, 0)
+    }
+  }
+
+  // A tighter version of the kit's Toggle row: smaller title, smaller switch.
+  component SmallToggle: CursorSurface {
+    id: small
+    property string label: ""
+    property string description: ""
+    property bool checked: false
+    property string fontFamily: root.fontFamily
+    signal clicked()
+    signal hovered(bool isHovered)
+
+    bordered: true
+    implicitHeight: Math.max(smallSwitch.implicitHeight, smallText.implicitHeight) + Style.spacing.sm * 2
+
+    Column {
+      id: smallText
+      anchors.left: parent.left
+      anchors.leftMargin: Style.spacing.sm + Style.space(2)
+      anchors.right: smallSwitch.left
+      anchors.rightMargin: Style.spacing.sm
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(2)
+
+      Text {
+        textFormat: Text.PlainText
+        text: small.label
+        color: small.foreground
+        font.family: small.fontFamily
+        font.pixelSize: Style.font.body
+        font.bold: true
+        elide: Text.ElideRight
+        width: parent.width
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        visible: small.description !== ""
+        text: small.description
+        color: root.dimFg
+        font.family: small.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
+        width: parent.width
+      }
+    }
+
+    ToggleSwitch {
+      id: smallSwitch
+      checked: small.checked
+      interactive: false
+      cursorRing: false
+      trackHeight: Style.space(16)
+      foreground: small.foreground
+      anchors.right: parent.right
+      anchors.rightMargin: Style.spacing.sm + Style.space(2)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: small.clicked()
+    }
+
+    HoverHandler {
+      onHoveredChanged: small.hovered(hovered)
     }
   }
 

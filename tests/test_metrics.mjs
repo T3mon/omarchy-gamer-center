@@ -36,7 +36,7 @@ test("numbers are clamped and stepped", () => {
   const c = M.sanitize({ scale: 9, opacity: 0.33, interval: 3 })
   assert.equal(c.scale, M.SCALE_MAX)
   assert.equal(c.opacity, 0.35)
-  assert.equal(c.interval, 1)
+  assert.equal(c.interval, M.DEFAULTS.interval)
   assert.equal(M.sanitize({ scale: true }).scale, 1)
   assert.equal(M.sanitize({ interval: "0.5" }).interval, 0.5)
 })
@@ -56,9 +56,15 @@ test("gpu and screen only take safe values", () => {
 })
 
 test("toggling a metric adds and removes it", () => {
-  const on = M.toggleMetric(M.DEFAULTS, "vram")
-  assert.ok(on.metrics.includes("vram"))
-  assert.ok(!M.toggleMetric(on, "vram").metrics.includes("vram"))
+  const on = M.toggleMetric(M.DEFAULTS, "time")
+  assert.ok(on.metrics.includes("time"))
+  assert.ok(!M.toggleMetric(on, "time").metrics.includes("time"))
+})
+
+test("fullscreen-only defaults on but keeps an explicit choice", () => {
+  assert.equal(M.sanitize({}).fullscreenOnly, true)
+  assert.equal(M.sanitize({ fullscreenOnly: false }).fullscreenOnly, false)
+  assert.equal(M.sanitize({ fullscreenOnly: "no" }).fullscreenOnly, true)
 })
 
 test("anchors and the MangoHud side", () => {
