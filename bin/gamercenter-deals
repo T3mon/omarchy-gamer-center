@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""Steam deals for Gamer Center: games that are 100% off right now, and the
+games on your wishlist that are on sale.
+
+    gamercenter-deals
+
+Prints one JSON object:
+    {"ok": true, "free": [...], "wishlist": [...], "wishlistOk": bool}
+Each game is {"id", "name", "discount", "final", "initial"}: the discount in
+percent and the prices as Steam formats them for your region. "wishlist"
+holds every discounted wishlist game; the panel picks the ones at or over
+the user's threshold.
+
+The free list is the store search Steam's own site uses (100% off games,
+no free-to-play), the method of nille/omarchy-steam-sniper (MIT). The
+wishlist is the account that logged in to Steam last, read through Steam's
+public wishlist API, so a private wishlist reads as empty. No key, no login.
+"""
+
+import html
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import sys
+import urllib.parse
+import urllib.request
+
+AGENT = "gamer-center"
+TIMEOUT = 15
+MAX_BODY = 8 * 1024 * 1024
+MAX_WISHLIST = 2000
+BATCH = 100
+FILTERS = "sort_by=_ASC&maxprice=free&category1=998&specials=1"
+FREE_URL = ("https://store.steampowered.com/search/results/?" + FILTERS
+            + "&query=&start=0&count=50&infinite=1&l=english")
+WISHLIST_URL = "https://api.steampowered.com/IWishlistService/GetWishlist/v1/?steamid="
+PRICES_URL = "https://store.steampowered.com/api/appdetails?filters=price_overview&appids="
+NAMES_URL = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/?input_json="
+APPID = re.compile(r"^[0-9]{1,10}$")
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+TAG = re.compile(r"<[^>]*>")
+
+
+def steam_reader():
+    """bin/gamercenter-steam as a module, for the Steam folder and the account."""
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "gamercenter-steam")
+    loader = importlib.machinery.SourceFileLoader("gamercenter_steam", path)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def fetch(url):
+    request = urllib.request.Request(url, headers={"User-Agent": AGENT, "Accept-Language": "en"})
+    with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+        body = response.read(MAX_BODY + 1)
+    if len(body) > MAX_BODY:
+        raise ValueError("too big")
+    return json.loads(body.decode("utf-8", "replace"))
+
+
+def printable(value, limit):
+    if not isinstance(value, str):
+        return ""
+    return " ".join(CONTROL.sub(" ", value).split())[:limit]
+
+
+def html_text(fragment, limit):
+    return printable(html.unescape(TAG.sub(" ", fragment or "")), limit)
+
+
+def percent(value):
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return n if 0 <= n <= 100 else 0
+
+
+# ---- 100% off -----------------------------------------------------------------
+
+ROW = re.compile(r'<a\s[^>]*class="search_result_row[^"]*"[^>]*>.*?</a>', re.S)
+
+
+def first(pattern, text):
+    m = re.search(pattern, text, re.S)
+    return m.group(1) if m else ""
+
+
+def parse_free(data):
+    """The games in Steam's search answer: {"results_html": "<a class=search_result_row …>"}."""
+    if not isinstance(data, dict) or not isinstance(data.get("results_html"), str):
+        raise ValueError("not a search answer")
+    games, seen = [], set()
+    for row in ROW.findall(data["results_html"]):
+        appid = first(r'data-ds-appid="([^"]*)"', row)
+        name = html_text(first(r'<span class="title">(.*?)</span>', row), 120)
+        if not APPID.match(appid) or appid in seen or not name:
+            continue  # bundles carry several ids; they aren't one game
+        seen.add(appid)
+        games.append({
+            "id": appid,
+            "name": name,
+            "discount": 100,
+            "final": html_text(first(r'class="discount_final_price[^"]*">(.*?)</div>', row), 32),
+            "initial": html_text(first(r'class="discount_original_price[^"]*">(.*?)</div>', row), 32),
+        })
+    return games
+
+
+# ---- The wishlist -------------------------------------------------------------
+
+def wishlist_ids(data):
+    items = (data or {}).get("response", {}).get("items", []) if isinstance(data, dict) else []
+    ids = []
+    for item in items if isinstance(items, list) else []:
+        appid = str(item.get("appid", "")) if isinstance(item, dict) else ""
+        if APPID.match(appid) and appid not in ids:
+            ids.append(appid)
+    return ids[:MAX_WISHLIST]
+
+
+def parse_prices(data):
+    """{appid: (discount, final, initial)} for the discounted games in an appdetails answer."""
+    out = {}
+    for appid, entry in (data if isinstance(data, dict) else {}).items():
+        if not APPID.match(str(appid)) or not isinstance(entry, dict) or not entry.get("success"):
+            continue
+        price = (entry.get("data") or {}).get("price_overview") if isinstance(entry.get("data"), dict) else None
+        if not isinstance(price, dict):
+            continue
+        discount = percent(price.get("discount_percent"))
+        if discount > 0:
+            out[str(appid)] = (discount, printable(price.get("final_formatted"), 32),
+                               printable(price.get("initial_formatted"), 32))
+    return out
+
+
+def parse_names(data):
+    items = (data or {}).get("response", {}).get("store_items", []) if isinstance(data, dict) else []
+    out = {}
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        appid, name = str(item.get("appid", "")), printable(item.get("name"), 120)
+        if APPID.match(appid) and name:
+            out[appid] = name
+    return out
+
+
+def batches(ids):
+    return [ids[i:i + BATCH] for i in range(0, len(ids), BATCH)]
+
+
+def wishlist(steamid, get=fetch):
+    ids = wishlist_ids(get(WISHLIST_URL + steamid))
+    prices = {}
+    for batch in batches(ids):
+        prices.update(parse_prices(get(PRICES_URL + ",".join(batch))))
+    on_sale = [a for a in ids if a in prices]
+    names = {}
+    for batch in batches(on_sale):
+        request = {"ids": [{"appid": int(a)} for a in batch],
+                   "context": {"language": "english", "country_code": "US"}, "data_request": {}}
+        names.update(parse_names(get(NAMES_URL + urllib.parse.quote(json.dumps(request, separators=(",", ":"))))))
+    games = []
+    for appid in on_sale:
+        if names.get(appid):
+            discount, final, initial = prices[appid]
+            games.append({"id": appid, "name": names[appid], "discount": discount, "final": final, "initial": initial})
+    return games
+
+
+def account_steamid():
+    steam = steam_reader()
+    root = steam.steam_root()
+    account = steam.current_user(root) if root else None
+    return str(int(account) + steam.STEAMID64_BASE) if account and account.isdigit() else None
+
+
+def deals(steamid, get=fetch):
+    free = parse_free(get(FREE_URL))
+    wished, wish_ok = [], False
+    if steamid:
+        try:
+            wished, wish_ok = wishlist(steamid, get), True
+        except Exception:
+            pass
+    return {"ok": True, "free": free, "wishlist": wished, "wishlistOk": wish_ok}
+
+
+def main():
+    try:
+        steamid = account_steamid()
+    except Exception:
+        steamid = None
+    print(json.dumps(deals(steamid), ensure_ascii=False, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as error:  # Never hand the shell a traceback instead of JSON.
+        print(json.dumps({"ok": False, "error": type(error).__name__}))

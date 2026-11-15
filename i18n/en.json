@@ -144,5 +144,21 @@
   "steam.deck.playable": "Playable",
   "steam.deck.unsupported": "Unsupported",
   "steam.deck.unknown": "Unknown",
-  "steam.launchOptions": "Launch options in Steam: %1"
+  "steam.launchOptions": "Launch options in Steam: %1",
+  "steam.deals": "Deals",
+  "steam.deals.count": "Deals · %1",
+  "steam.deals.min": "Wishlist %1%+ off",
+  "steam.deals.reading": "Checking Steam…",
+  "steam.deals.idle": "Checking Steam…",
+  "steam.deals.failed": "Couldn't reach Steam.",
+  "steam.deals.none": "Nothing free and no wishlist game on sale that much right now.",
+  "steam.deals.noneNoWishlist": "Nothing free right now. Couldn't read your wishlist; it may be private.",
+  "steam.deals.free": "Free",
+  "steam.deals.was": "was %1",
+  "steam.deals.owned": "owned",
+  "steam.deals.wishlist": "wishlist",
+  "steam.deals.ownedLine": "Already in your library",
+  "steam.deals.wishlistLine": "On your wishlist",
+  "steam.deals.claimHint": "Add it to your account on its store page to keep it.",
+  "steam.action.store": "Store page"
 }

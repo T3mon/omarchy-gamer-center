@@ -1,6 +1,6 @@
 # Gamer Center
 
-Omarchy shell plugin `t3mon.gamercenter`: game tools in the bar. The panel has three pages and opens on Steam: Stats (a stats HUD over games and a MangoHud FPS switch), Game mode (ported from YassineSawahi/omarchy-gamemode, MIT) and Steam (the library, its readers ported from Rysen-Winters/omarchy-quick-steam, MIT). Ideas for later, built only when asked: Steam free games and deals, FPS for browser games.
+Omarchy shell plugin `t3mon.gamercenter`: game tools in the bar. The panel has three pages and opens on Steam: Stats (a stats HUD over games and a MangoHud FPS switch), Game mode (ported from YassineSawahi/omarchy-gamemode, MIT) and Steam (the library, its readers ported from Rysen-Winters/omarchy-quick-steam, MIT). Ideas for later, built only when asked: FPS for browser games.
 
 Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how Omarchy plugins load, the `qs.Ui` kit, IPC, layer shell and the reload loop. This file covers only this plugin.
 
@@ -21,6 +21,7 @@ Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how O
 | `bin/gamercenter-mangohud` | Manages our block in MangoHud.conf: `status`, `apply`, `remove` |
 | `bin/gamercenter-gamemode` | Game mode helper, ported from omarchy-gamemode: `status`, `select`, `on`, `off`, `toggle`, `pause`, `resume`, `auto`, `detect` |
 | `bin/gamercenter-steam` | Steam library reader: one JSON object with drives and games. `--root DIR` reads a fixture Steam folder |
+| `bin/gamercenter-deals` | Steam deals reader, the only part that goes online: 100% off games and discounted wishlist games, one JSON object |
 | `licenses/omarchy-gamemode.txt`, `licenses/omarchy-quick-steam.txt` | The MIT notices the ports must keep |
 | `i18n/en.json` | Every UI string |
 | `tests/` | `run.sh` runs all checks |
@@ -60,6 +61,7 @@ Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how O
 - Actions: `stActions` is the text buttons (run, uninstall / install) then the icon-only ones, `folder` (installed with a folder) and `options` (`steam://gameproperties/N`, Steam's Properties window with the launch options; the tooltip shows the current ones). The folder opens through `Steam.openFolder()` with the same `uwsm-app -- xdg-open` argv, after `Library.folder()`.
 - Colors: Launch green, Install accent, Uninstall `Color.urgent`; Deck Verified green, Playable yellow, Unsupported urgent. The shell has no green or yellow, so `themeColorsFile` reads the theme's `colors.toml` (`Library.themeColors()`: `green`/`yellow`, else `color2`/`color3`) when the panel or the Steam page opens; foreground when missing.
 - Keyboard rows: `st-top` (two tabs, then the sorts), `st-search`, `st-game-i` (moving onto one picks it), `st-actions`. Right on a game goes to the buttons; left at the first button, or up, goes back. Esc closes the panel.
+- Deals tab (third tab, `stTab` "deals"): `gamercenter-deals` reads Steam's store search for 100% off games (the infinite-scroll endpoint with `maxprice=free&specials=1`, Steam Sniper's method; the rows' HTML is parsed) and, for the last-logged-in account, `IWishlistService/GetWishlist` → `appdetails?filters=price_overview` (prices for your region, batches of 100) → `IStoreBrowseService/GetItems` (names, discounted ids only). No key, no login; a private wishlist reads as empty (`wishlistOk` false only on a failed call). Run when the Deals tab opens, at most every 15 min (`Steam.refreshDeals()`). Text only, no covers, as asked. `Library.dealList()`: free first, then wishlist games at or over `dealMin`, biggest discount first, owned ones marked. `dealMin` (5..100, steps of 5, default 50) is set by the − / + buttons where the sorts sit and saved in `~/.config/gamer-center/steam.json` as `wishlistDiscount`. The one action is `steam://store/N`.
 - Dates: `Library.daysAgo()` counts calendar days from `stNow`, set when the panel opens: today, yesterday, N days ago under 30, else "MMM yyyy".
 
 ## Stats helper
@@ -100,7 +102,7 @@ omarchy plugin validate .
 - Automatic mode with a real game running.
 - Middle-click on the bar icon.
 - The All switch and the Docker folder's switch in the Game mode list (folding was checked).
-- The Steam page's Launch, Install, Uninstall, folder and launch-options buttons (they start Steam, its dialogs or the file manager), and its keyboard and mouse use: tab switch, sort, picking a game, moving to the buttons, typing in search, the icon tooltips. Both tabs, a preset search, the colors, and the Deck line were checked in screenshots.
+- The Deals tab with real wishlist sales, its − / + buttons and Store page button; the Steam page's Launch, Install, Uninstall, folder and launch-options buttons (they start Steam, its dialogs or the file manager), and its keyboard and mouse use: tab switch, sort, picking a game, moving to the buttons, typing in search, the icon tooltips. Both tabs, a preset search, the colors, and the Deck line were checked in screenshots.
 
 ## Git
 

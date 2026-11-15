@@ -7,7 +7,7 @@ var SORTS = ["recent", "name", "size"]
 var MAX_GAMES = 5000
 var MAX_DRIVES = 16
 var ACTIONS = { run: "steam://rungameid/", install: "steam://install/", uninstall: "steam://uninstall/",
-               options: "steam://gameproperties/" }
+               options: "steam://gameproperties/", store: "steam://store/" }
 
 function validId(id) {
   return typeof id === "string" && /^[0-9]{1,10}$/.test(id)
@@ -171,4 +171,59 @@ function openCommand(url, uwsm) {
 // Used share of a drive, 0..1.
 function usedShare(drive) {
   return drive && drive.total > 0 ? Math.max(0, Math.min(1, (drive.total - drive.free) / drive.total)) : 0
+}
+
+// ---- Deals -----------------------------------------------------------------
+
+// The wishlist threshold: 5..100 % in steps of 5, 50 by default.
+var DEAL_MIN_DEFAULT = 50
+
+function dealMin(v) {
+  return typeof v === "number" && isFinite(v) ? Math.max(5, Math.min(100, Math.round(v / 5) * 5)) : DEAL_MIN_DEFAULT
+}
+
+function dealGames(raw, max) {
+  var out = [], seen = {}
+  for (var i = 0; Array.isArray(raw) && i < raw.length && out.length < max; i++) {
+    var g = raw[i]
+    if (!g || typeof g !== "object" || !validId(g.id) || seen[g.id]) continue
+    var name = text(g.name, 120)
+    var discount = typeof g.discount === "number" && g.discount >= 1 && g.discount <= 100 ? Math.round(g.discount) : 0
+    if (!name || !discount) continue
+    seen[g.id] = true
+    out.push({ id: g.id, name: name, discount: discount, final: text(g.final, 32), initial: text(g.initial, 32) })
+  }
+  return out
+}
+
+// bin/gamercenter-deals' JSON. Returns { free, wishlist, wishlistOk }, or null.
+function cleanDeals(data) {
+  if (!data || typeof data !== "object" || data.ok !== true
+      || !Array.isArray(data.free) || !Array.isArray(data.wishlist)) return null
+  return { free: dealGames(data.free, 200), wishlist: dealGames(data.wishlist, 2000), wishlistOk: data.wishlistOk === true }
+}
+
+// The Deals list: 100% off games first, then wishlist games at least min %
+// off, biggest discount first. owned is { id: true } for the library.
+function dealList(deals, min, query, owned) {
+  if (!deals) return []
+  var out = [], at = {}, m = dealMin(min)
+  function add(g, free, wished) {
+    if (!matches(g, query)) return
+    if (at.hasOwnProperty(g.id)) { if (wished) out[at[g.id]].wishlist = true; return }
+    at[g.id] = out.length
+    out.push({ id: g.id, name: g.name, discount: g.discount, final: g.final, initial: g.initial,
+               free: free, wishlist: wished, owned: !!owned && owned.hasOwnProperty(g.id) })
+  }
+  deals.free.forEach(function(g) { add(g, true, false) })
+  deals.wishlist.filter(function(g) { return g.discount >= m })
+    .sort(function(a, b) { return b.discount - a.discount || byName(a, b) })
+    .forEach(function(g) { add(g, g.discount === 100, true) })
+  return out
+}
+
+function ownedIds(games) {
+  var out = {}
+  for (var i = 0; games && i < games.length; i++) out[games[i].id] = true
+  return out
 }

@@ -175,3 +175,30 @@ test("used share stays between 0 and 1", () => {
   assert.equal(L.usedShare(null), 0)
   assert.equal(L.usedShare({ free: 900, total: 500 }), 0)
 })
+
+test("deals are cleaned, then listed free first and over the threshold", () => {
+  assert.equal(L.cleanDeals({ ok: false }), null)
+  assert.equal(L.cleanDeals({ ok: true, free: [] }), null)
+  const d = L.cleanDeals({ ok: true, wishlistOk: true,
+    free: [{ id: "10", name: "Free One", discount: 100, final: "0₴", initial: "400₴" },
+           { id: "x; rm", name: "Bad", discount: 100 }, { id: "11", name: "\u0007", discount: 100 }],
+    wishlist: [{ id: "20", name: "Half Off", discount: 50, final: "50₴", initial: "100₴" },
+               { id: "21", name: "Small", discount: 20 }, { id: "22", name: "Big", discount: 90 },
+               { id: "10", name: "Free One", discount: 100 }, { id: "23", name: "Zero", discount: 0 },
+               { id: "24", name: "Weird", discount: 150 }] })
+  assert.deepEqual(plain(d.free.map(g => g.id)), ["10"])
+  assert.deepEqual(plain(d.wishlist.map(g => g.id)), ["20", "21", "22", "10"])
+  const ids = (min, q, owned) => plain(L.dealList(d, min, q, owned).map(g => g.id))
+  assert.deepEqual(ids(50), ["10", "22", "20"])
+  assert.deepEqual(ids(95), ["10"])
+  assert.deepEqual(ids(5), ["10", "22", "20", "21"])
+  assert.deepEqual(ids(50, "big"), ["22"])
+  const list = plain(L.dealList(d, 50, "", L.ownedIds([{ id: "22" }])))
+  assert.deepEqual(list.map(g => [g.free, g.wishlist, g.owned]), [[true, true, false], [false, true, true], [false, true, false]])
+  assert.deepEqual(plain(L.dealList(null, 50)), [])
+})
+
+test("the wishlist threshold is 5 to 100 in fives", () => {
+  assert.deepEqual([L.dealMin(50), L.dealMin(0), L.dealMin(101), L.dealMin(47), L.dealMin("x"), L.dealMin(NaN)], [50, 5, 100, 45, 50, 50])
+  assert.equal(L.steamUrl("store", "10"), "steam://store/10")
+})

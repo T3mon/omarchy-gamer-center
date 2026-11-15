@@ -10,6 +10,10 @@ Item {
   id: root
 
   required property string helper
+  required property string dealsHelper
+  // ~/.config/gamer-center, and whether it exists yet.
+  required property string configDir
+  property bool configDirReady: false
 
   // How many open panels show the Steam page: they get a reading every 5 s.
   property int watchers: 0
@@ -68,6 +72,77 @@ Item {
   }
 
   onWatchersChanged: if (watchers > 0) refresh()
+
+  // ---- Deals: 100% off games and wishlist sales, from Steam's store.
+
+  // null until the first reading; "idle", "reading", "ready" or "failed".
+  property var deals: null
+  property string dealsPhase: "idle"
+  property double dealsAt: 0
+  // Wishlist games show from this discount up, in percent.
+  property int dealMin: Library.DEAL_MIN_DEFAULT
+  property string savedSettings: ""
+
+  // Checks Steam when the last reading is over 15 minutes old.
+  function refreshDeals() {
+    if (dealsProc.running || (deals && Date.now() - dealsAt < 15 * 60000)) return
+    if (!deals) dealsPhase = "reading"
+    dealsProc.running = true
+  }
+
+  function takeDeals(raw) {
+    var data
+    try { data = JSON.parse(String(raw || "")) } catch (e) { data = null }
+    var cleaned = Library.cleanDeals(data)
+    if (cleaned) {
+      deals = cleaned
+      dealsAt = Date.now()
+      dealsPhase = "ready"
+    } else if (!deals) dealsPhase = "failed"
+  }
+
+  function setDealMin(v) {
+    var m = Library.dealMin(v)
+    if (m === dealMin) return
+    dealMin = m
+    saveTimer.restart()
+  }
+
+  Process {
+    id: dealsProc
+    command: ["python3", "-I", root.dealsHelper]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.takeDeals(text)
+    }
+  }
+
+  // ~/.config/gamer-center/steam.json: { "wishlistDiscount": 50 }.
+  FileView {
+    id: settingsFile
+    path: root.configDir + "/steam.json"
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    onLoaded: {
+      var raw = text()
+      if (raw === root.savedSettings || saveTimer.running) return
+      var data
+      try { data = JSON.parse(raw) } catch (e) { data = null }
+      root.dealMin = Library.dealMin(data && typeof data === "object" ? data.wishlistDiscount : null)
+    }
+    onFileChanged: reload()
+  }
+
+  Timer {
+    id: saveTimer
+    interval: 300
+    onTriggered: {
+      if (!root.configDirReady) { restart(); return }
+      root.savedSettings = JSON.stringify({ wishlistDiscount: root.dealMin }, null, 2) + "\n"
+      settingsFile.setText(root.savedSettings)
+    }
+  }
 
   Process {
     id: readProc

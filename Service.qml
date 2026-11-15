@@ -380,6 +380,9 @@ Item {
   Steam {
     id: steamItem
     helper: root.steamHelper
+    dealsHelper: root.pluginDir + "/bin/gamercenter-deals"
+    configDir: root.configDir
+    configDirReady: root.configDirReady
   }
 
   // ------------------------------------------------------------ panel hooks
