@@ -86,6 +86,9 @@ Panel {
       : action === "uninstall" ? Commons.Color.urgent : fg
   }
 
+  // Game mode's switches: green when on, red when off.
+  function switchTint(on) { return on ? stGreen : Commons.Color.urgent }
+
   function deckColor(status) {
     return status === "verified" ? stGreen : status === "playable" ? stYellow
       : status === "unsupported" ? Commons.Color.urgent : dimFg
@@ -233,7 +236,7 @@ Panel {
   onPageChanged: {
     syncPreview()
     stSearching = false
-    if (page === "steam" && opened) themeColorsFile.reload()
+    if (page !== "stats" && opened) themeColorsFile.reload()
   }
 
   // Middle click and the Pause button: with nothing ticked, show what could be.
@@ -266,7 +269,7 @@ Panel {
     syncPreview()
     if (!opened) { stSearching = false; stQuery = ""; return }
     if (service) service.refreshMango()
-    if (page === "steam") themeColorsFile.reload()
+    if (page !== "stats") themeColorsFile.reload()
     if (page === "steam" && stDeals && steamModel) steamModel.refreshDeals()
     stNow = Date.now()
     cursorRow = page === "stats" ? "enabled" : page === "gamemode" ? "gm-power" : "st-top"
@@ -1149,7 +1152,7 @@ Panel {
                 id: gmGlyph
                 textFormat: Text.PlainText
                 text: ""
-                color: root.gameOn ? Commons.Color.accent : root.fg
+                color: root.gameOn ? root.stGreen : root.fg
                 opacity: root.gameOn ? 1 : 0.5
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.display
@@ -1169,7 +1172,7 @@ Panel {
                 Text {
                   textFormat: Text.PlainText
                   text: strings.t(root.gameOn ? "gm.titleOn" : "gm.titleOff")
-                  color: root.fg
+                  color: root.gameOn ? root.stGreen : root.fg
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.title
                   font.bold: true
@@ -1196,7 +1199,9 @@ Panel {
                 enabled: !!root.gm && !root.gm.working && !!root.gm.status && (root.gameOn || root.gm.tickedCount > 0)
                 selected: root.gameOn
                 bordered: true
-                foreground: root.fg
+                // Pausing in yellow, bringing everything back in green.
+                foreground: root.gameOn ? root.stGreen : root.stYellow
+                accent: foreground
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 hasCursor: root.cursorOn("gm-power")
@@ -1208,6 +1213,7 @@ Panel {
 
             SmallToggle {
               id: gmAuto
+              tinted: true
               width: parent.width
               label: strings.t("gm.auto")
               description: root.gm && root.gm.autoEnabled && root.gm.game !== ""
@@ -1262,13 +1268,12 @@ Panel {
                 }
               }
 
-              ToggleSwitch {
+              TintSwitch {
                 id: gmAllSwitch
                 checked: root.gmGroupOn(root.gmAll)
                 hasCursor: root.cursorOn("gm-all")
                 onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(gmAllRow)
                 trackHeight: Style.space(16)
-                foreground: root.fg
                 anchors.right: parent.right
                 anchors.rightMargin: Style.spacing.sm + Style.space(2) - (cursorRing ? cursorPad : 0)
                 anchors.verticalCenter: parent.verticalCenter
@@ -1846,6 +1851,7 @@ Panel {
     property int itemIndex: -1
     readonly property var item: root.gmItems[itemIndex] || ({ key: "", kind: "app", label: "", detail: "", selected: false, paused: false })
     readonly property string rowId: "gm-item-" + itemIndex
+    tinted: true
     width: parent ? parent.width : 0
     label: item.label
     description: root.gmRowDescription(item)
@@ -1928,12 +1934,11 @@ Panel {
       }
     }
 
-    ToggleSwitch {
+    TintSwitch {
       id: groupSwitch
       checked: groupTitle.checked
       hasCursor: root.cursorOn(groupTitle.rowId, 1)
       trackHeight: Style.space(16)
-      foreground: root.fg
       anchors.right: parent.right
       anchors.rightMargin: Style.spacing.sm + Style.space(2) - (cursorRing ? cursorPad : 0)
       anchors.verticalCenter: parent.verticalCenter
@@ -2073,12 +2078,42 @@ Panel {
     }
   }
 
+  // The kit's switch, green when on and red when off. Themes can pin the
+  // "on" color in shell.toml, so the track and knob are painted over it.
+  component TintSwitch: ToggleSwitch {
+    id: tintSwitch
+    property bool tinted: true
+    readonly property color tint: root.switchTint(checked)
+    foreground: tinted ? tint : root.fg
+
+    Rectangle {
+      visible: tintSwitch.tinted && tintSwitch.checked
+      x: tintSwitch._pad + (tintSwitch.width - tintSwitch._pad * 2 - tintSwitch.trackWidth) / 2
+      anchors.verticalCenter: parent.verticalCenter
+      width: tintSwitch.trackWidth
+      height: tintSwitch.trackHeight
+      radius: tintSwitch.rounded ? height / 2 : 0
+      color: Util.alpha(tintSwitch.tint, 0.25)
+
+      Rectangle {
+        width: tintSwitch.knobSize
+        height: tintSwitch.knobSize
+        radius: tintSwitch.rounded ? height / 2 : 0
+        x: parent.width - width - tintSwitch.knobInset
+        anchors.verticalCenter: parent.verticalCenter
+        color: tintSwitch.tint
+      }
+    }
+  }
+
   // A tighter version of the kit's Toggle row: smaller title, smaller switch.
   component SmallToggle: CursorSurface {
     id: small
     property string label: ""
     property string description: ""
     property bool checked: false
+    // Green when on, red when off (Game mode's rows).
+    property bool tinted: false
     property string fontFamily: root.fontFamily
     signal clicked()
     signal hovered(bool isHovered)
@@ -2118,13 +2153,14 @@ Panel {
       }
     }
 
-    ToggleSwitch {
+    TintSwitch {
       id: smallSwitch
       checked: small.checked
       interactive: false
       cursorRing: false
       trackHeight: Style.space(16)
-      foreground: small.foreground
+      tinted: small.tinted
+      foreground: tinted ? tint : small.foreground
       anchors.right: parent.right
       anchors.rightMargin: Style.spacing.sm + Style.space(2)
       anchors.verticalCenter: parent.verticalCenter
