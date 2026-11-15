@@ -6,10 +6,11 @@ import qs.Commons
 import qs.Commons as Commons
 import "overlay"
 import "gamemode"
+import "steam"
 import "overlay/Metrics.js" as Metrics
 
 // Owns the Gamer Center overlay (its settings file, the stats helper, the HUD windows,
-// the MangoHud block) and game mode. The bar panel only reads from here and calls in.
+// the MangoHud block), game mode and the Steam library. The bar panel only reads from here and calls in.
 Item {
   id: root
 
@@ -21,6 +22,7 @@ Item {
   readonly property string statsHelper: pluginDir + "/bin/gamercenter-stats"
   readonly property string mangoHelper: pluginDir + "/bin/gamercenter-mangohud"
   readonly property string gameModeHelper: pluginDir + "/bin/gamercenter-gamemode"
+  readonly property string steamHelper: pluginDir + "/bin/gamercenter-steam"
   readonly property string configDir: (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/gamer-center"
   readonly property string configPath: configDir + "/overlay.json"
 
@@ -369,6 +371,15 @@ Item {
   GameMode {
     id: gameModeItem
     helper: root.gameModeHelper
+  }
+
+  // ------------------------------------------------------------ steam
+
+  readonly property alias steam: steamItem
+
+  Steam {
+    id: steamItem
+    helper: root.steamHelper
   }
 
   // ------------------------------------------------------------ panel hooks

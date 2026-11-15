@@ -1,6 +1,6 @@
 # Gamer Center
 
-Omarchy shell plugin `t3mon.gamercenter`: game tools in the bar. The panel has two pages: Stats (a stats HUD over games and a MangoHud FPS switch) and Game mode (ported from YassineSawahi/omarchy-gamemode, MIT). Ideas for later, built only when asked: Steam free games and deals, FPS for browser games.
+Omarchy shell plugin `t3mon.gamercenter`: game tools in the bar. The panel has three pages: Stats (a stats HUD over games and a MangoHud FPS switch), Game mode (ported from YassineSawahi/omarchy-gamemode, MIT) and Steam (the library, its readers ported from Rysen-Winters/omarchy-quick-steam, MIT). Ideas for later, built only when asked: Steam free games and deals, FPS for browser games.
 
 Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how Omarchy plugins load, the `qs.Ui` kit, IPC, layer shell and the reload loop. This file covers only this plugin.
 
@@ -10,15 +10,18 @@ Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how O
 |---|---|
 | `manifest.json` | id `t3mon.gamercenter`, kinds `service` and `bar-widget` |
 | `Service.qml` | Always running. Owns the overlay settings, the stats helper, fullscreen detection, one HUD window per target screen, MangoHud control, and the IPC target `gamercenter` |
-| `Panel.qml` | Bar icon (gamepad) and the panel with its Stats and Game mode pages. Left-click opens the panel, right-click toggles the overlay, middle-click toggles game mode |
+| `Panel.qml` | Bar icon (gamepad) and the panel with its Stats, Game mode and Steam pages. Left-click opens the panel, right-click toggles the overlay, middle-click toggles game mode |
 | `gamemode/GameMode.qml` | Game mode state, owned by the service: reads `gamercenter-gamemode status`, cleans it, starts switches detached |
+| `steam/Steam.qml` | The Steam library, owned by the service: reads `gamercenter-steam` while a panel shows the Steam page, opens steam:// links |
+| `steam/Library.js` | Pure JS for the Steam page: cleaning the reading, the two lists and their sort, the steam:// links. Tested in Node |
 | `overlay/Metrics.js` | Pure JS with no QML types: settings defaults and sanitizing, positions, turning a stats sample into HUD lines. Tested in Node |
 | `overlay/HudWindow.qml` | Layer-shell window on the Overlay layer: click-through, no keyboard focus, namespace `gamer-center-hud` |
 | `overlay/HudCard.qml` | Draws the HUD (stacked grid or one line). The panel reuses it for its preview |
 | `bin/gamercenter-stats` | Stats streamer, Python standard library, one JSON object per line |
 | `bin/gamercenter-mangohud` | Manages our block in MangoHud.conf: `status`, `apply`, `remove` |
 | `bin/gamercenter-gamemode` | Game mode helper, ported from omarchy-gamemode: `status`, `select`, `on`, `off`, `toggle`, `pause`, `resume`, `auto`, `detect` |
-| `licenses/omarchy-gamemode.txt` | The MIT notice the port must keep |
+| `bin/gamercenter-steam` | Steam library reader: one JSON object with drives and games. `--root DIR` reads a fixture Steam folder |
+| `licenses/omarchy-gamemode.txt`, `licenses/omarchy-quick-steam.txt` | The MIT notices the ports must keep |
 | `i18n/en.json` | Every UI string |
 | `tests/` | `run.sh` runs all checks |
 
@@ -44,6 +47,15 @@ Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how O
 - Browsers reopen through `reopen_argv()`: `--app=`, `--app-id=`, `--new-window` and URLs are dropped, since the first window's process may be an Omarchy web app and `--app` skips the session restore.
 - `split_title()`: Chromium-based browsers put their whole command line in argv[0]; it's split when its first word is the program (`/proc/<pid>/exe`).
 - Tests must never run `on`, `off`, `pause` or `resume` for real: they close the user's apps and stop containers.
+
+## Steam
+
+- Bare minimum on purpose, as asked: drives, Installed / Not installed, sort (Recent, Name, Size), details with time played, Launch, Install, Uninstall. Nothing else until asked.
+- `gamercenter-steam` reads, under the Steam root: `libraryfolders.vdf`, every `appmanifest_*.acf` (installed, `SizeOnDisk`), `userdata/<id>/config/licensecache` (live licenses; unscrambled with the account id as seed, CRC-checked, refunded and expired flags dropped), `appcache/packageinfo.vdf` (apps per package), `appcache/appinfo.vdf` (name and type, parsed only for owned or installed ids), `localconfig.vdf` (LastPlayed, Playtime in minutes). Only type `game` is listed; tools and DLC aren't. No licensecache means every cached package counts.
+- Drives are merged by `st_dev`: one row per disk, with `statvfs` free and total.
+- `Steam.qml` runs the helper when a panel's Steam page opens (`watchers`) and every 5 s while it stays open; an unchanged reading is skipped. A reading takes about 0.1 s here (118 games).
+- Actions are `steam://rungameid/N`, `steam://install/N`, `steam://uninstall/N` through `uwsm-app -- xdg-open URL` (plain `xdg-open` without uwsm). Install and Uninstall open Steam's own dialog (drive pick, confirm); the panel closes after any action. Quick Steam's `steam -silent +app_install ID FOLDER` path is not used.
+- The details view replaces the list (`stGameId`); Esc and Back return to the same scroll spot. Rows are indexed Repeaters over `stGames`, so a new reading updates them in place.
 
 ## Stats helper
 
@@ -83,6 +95,7 @@ omarchy plugin validate .
 - Automatic mode with a real game running.
 - Middle-click on the bar icon.
 - The All switch and the Docker folder's switch in the Game mode list (folding was checked).
+- The Steam page's Launch, Install and Uninstall (they start Steam or its dialogs), and its keyboard and mouse use: tab switch, sort, opening a game, Back, Esc. The list, a details view and the Not installed tab were checked in screenshots.
 
 ## Git
 

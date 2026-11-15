@@ -4,7 +4,7 @@
   "name": "Gamer Center",
   "version": "1.0.0",
   "author": "T3mon",
-  "description": "Game tools: a stats overlay, a MangoHud FPS switch and a game mode that frees memory",
+  "description": "Game tools: a stats overlay, a MangoHud FPS switch, a game mode that frees memory and a Steam library",
   "kinds": [
     "service",
     "bar-widget"
@@ -15,7 +15,7 @@
   },
   "barWidget": {
     "displayName": "Gamer Center",
-    "description": "Game stats overlay, FPS switch and game mode",
+    "description": "Game stats overlay, FPS switch, game mode and Steam library",
     "category": "Games",
     "allowMultiple": false,
     "defaultSection": "right"

@@ -1,9 +1,10 @@
 # Gamer Center
 
-Game tools for the Omarchy shell. The panel has two pages:
+Game tools for the Omarchy shell. The panel has three pages:
 
 - **Stats:** a HUD over your games (CPU and GPU load, temperature and clock, GPU power, RAM, VRAM, battery draw and the time) and a switch for MangoHud's in-game FPS counter.
 - **Game mode:** frees memory before you play by closing big apps, stopping Docker projects and the file indexer, then brings them all back afterwards.
+- **Steam:** your Steam games, installed or not, with their size, time played, and Launch, Install and Uninstall, plus the free space on each drive with a Steam library.
 
 ## Install
 
@@ -41,6 +42,16 @@ Turn game mode on before you launch the game, so the memory is free from the sta
 
 Chromium-based browsers rewrite their command line into one string; it's split back into arguments when saved, so Brave and Chrome reopen.
 
+## Steam
+
+The Steam page reads Steam's own files on disk; nothing goes online.
+
+- At the top, each drive that holds a Steam library: how much is free, with a bar of how full it is.
+- **Installed** and **Not installed** split the games you own. Sort them by **Recent** (last played), **Name** or **Size** (installed games only).
+- Click a game for its details: time played, its size and drive, and **Launch**, **Install** or **Uninstall**. Install and Uninstall open Steam's own dialog, where you pick the drive or confirm. Esc goes back to the list.
+
+Owned games come from your account's license cache, so refunded games and expired free weekends are left out. Tools such as Proton, and DLC, aren't listed. The library reading is ported from [omarchy-quick-steam](https://github.com/Rysen-Winters/omarchy-quick-steam) by Rysen Winters (MIT, see `licenses/omarchy-quick-steam.txt`).
+
 ## Commands
 
 ```bash
@@ -59,4 +70,5 @@ Positions: `top-left`, `top-center`, `top-right`, `bottom-left`, `bottom-center`
 - Stats come from `bin/gamercenter-stats` (Python, standard library only). It runs only while the HUD is showing or the panel is open, reads `/proc` and `/sys` plus NVML for NVIDIA cards, and never wakes a GPU that is asleep.
 - If you turn on Hyprland's `render:direct_scanout`, a fullscreen game can't use it on a monitor while the HUD is showing there.
 - Game mode runs `bin/gamercenter-gamemode` (Python, standard library only): every 20 seconds, every 3 while its page is open.
+- The Steam page runs `bin/gamercenter-steam` (Python, standard library only) when it opens and every 5 seconds while it stays open. A reading takes about 0.1 s.
 - Run the tests with `tests/run.sh`.

@@ -1,0 +1,533 @@
+#!/usr/bin/env python3
+"""Gamer Center's Steam page: the library as one JSON object on stdout.
+
+    gamercenter-steam [--root STEAM_ROOT]
+
+Everything comes from Steam's own files; nothing is written and nothing
+leaves the machine. Under the Steam root:
+
+  steamapps/libraryfolders.vdf          every library folder
+  <library>/steamapps/appmanifest_*     installed games and their size
+  userdata/<id>/config/licensecache     the packages the account holds a live
+                                        license for (see load_licenses)
+  appcache/packageinfo.vdf              the apps in each package, so owned
+                                        games that aren't installed show up
+  appcache/appinfo.vdf                  each app's name and type
+  userdata/<id>/config/localconfig.vdf  last played and time played
+
+The VDF readers, the library list, the license cache and the package list
+are ported from omarchy-quick-steam by Rysen Winters (MIT, see
+licenses/omarchy-quick-steam.txt).
+
+Every file is untrusted input: sizes are capped, a file that fails to parse
+reads as empty, and only digits are accepted as app ids.
+"""
+
+import argparse
+import glob
+import json
+import os
+import re
+import shutil
+import struct
+import sys
+import zlib
+
+MAX_TEXT = 64 * 1024 * 1024
+MAX_BINARY = 256 * 1024 * 1024
+MAX_LICENSES = 16 * 1024 * 1024
+MAX_GAMES = 5000
+STEAMID64_BASE = 76561197960265728
+APPID = re.compile(r"^[0-9]{1,10}$")
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def steam_root():
+    home = os.path.expanduser("~")
+    for candidate in (
+        os.path.join(home, ".steam/root"),
+        os.path.join(home, ".local/share/Steam"),
+        os.path.join(home, ".var/app/com.valvesoftware.Steam/.local/share/Steam"),
+    ):
+        if os.path.isfile(os.path.join(candidate, "config/config.vdf")):
+            return os.path.realpath(candidate)
+    return None
+
+
+def read_file(path, limit):
+    try:
+        if os.path.getsize(path) > limit:
+            return None
+        with open(path, "rb") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def as_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def printable(value, limit=120):
+    return CONTROL.sub(" ", value).strip()[:limit] if isinstance(value, str) else ""
+
+
+# ---- Text VDF ---------------------------------------------------------------
+
+TOKEN = re.compile(r'"((?:[^"\\]|\\.)*)"|([{}])|(//[^\n]*)|\s+', re.S)
+
+
+def parse_text_vdf(text):
+    """Nested dicts; later duplicate keys win. Keys keep their case."""
+    root, stack, key = {}, [], None
+    current = root
+    for match in TOKEN.finditer(text):
+        string, brace, comment = match.groups()
+        if comment is not None or (string is None and brace is None):
+            continue
+        if brace == "{":
+            node = {}
+            if key is not None:
+                current[key] = node
+            stack.append(current)
+            current, key = node, None
+        elif brace == "}":
+            current = stack.pop() if stack else root
+            key = None
+        elif key is None:
+            key = string.replace('\\"', '"').replace("\\\\", "\\")
+        else:
+            current[key] = string.replace('\\"', '"').replace("\\\\", "\\")
+            key = None
+    return root
+
+
+def load_text_vdf(path):
+    data = read_file(path, MAX_TEXT)
+    if data is None:
+        return {}
+    try:
+        return parse_text_vdf(data.decode("utf-8", "replace"))
+    except (IndexError, ValueError):
+        return {}
+
+
+def child(node, *names):
+    """Case-insensitive descent through nested dicts; {} when a step is missing."""
+    for name in names:
+        if not isinstance(node, dict):
+            return {}
+        lowered = name.lower()
+        node = next((value for key, value in node.items() if key.lower() == lowered), {})
+    return node
+
+
+# ---- Library folders --------------------------------------------------------
+
+def mount_of(path):
+    while not os.path.ismount(path) and path != "/":
+        path = os.path.dirname(path)
+    return path
+
+
+def libraries(root):
+    """Every Steam library folder, the Steam root first: its path, a short
+    label, and the device it lives on."""
+    found, seen = [], set()
+    folders = load_text_vdf(os.path.join(root, "steamapps/libraryfolders.vdf"))
+    entries = child(folders, "libraryfolders") or folders
+    listed = [e for e in entries.values() if isinstance(e, dict)]
+    labels = {child(e, "path"): child(e, "label") for e in listed if isinstance(child(e, "path"), str)}
+    for path in [root] + [child(e, "path") for e in listed]:
+        if not isinstance(path, str) or not path:
+            continue
+        real = os.path.realpath(path)
+        if real in seen or not os.path.isdir(os.path.join(real, "steamapps")):
+            continue
+        seen.add(real)
+        label = printable(labels.get(path), 40)
+        if not label:
+            mount = mount_of(real)
+            label = "Steam" if real == root or mount == "/" else printable(os.path.basename(mount), 40) or "Steam"
+        try:
+            device = os.stat(real).st_dev
+        except OSError:
+            device = None
+        found.append({"path": real, "label": label, "device": device})
+    return found
+
+
+def drives(libs, installed):
+    """One entry per disk that holds a library: free and total space, and
+    how much the installed games on it take."""
+    out, by_device = [], {}
+    for index, lib in enumerate(libs):
+        key = lib["device"] if lib["device"] is not None else ("lib", index)
+        if key not in by_device:
+            try:
+                stats = os.statvfs(lib["path"])
+                free, total = stats.f_bavail * stats.f_frsize, stats.f_blocks * stats.f_frsize
+            except OSError:
+                free = total = 0
+            by_device[key] = len(out)
+            out.append({"label": lib["label"], "free": free, "total": total, "used": 0, "games": 0})
+        lib["drive"] = by_device[key]
+    for game in installed.values():
+        drive = out[libs[game["library"]]["drive"]]
+        drive["used"] += game["size"]
+        drive["games"] += 1
+    return out
+
+
+# ---- Binary VDF (appinfo.vdf / packageinfo.vdf) -----------------------------
+
+def read_cstring(buf, pos):
+    end = buf.index(b"\0", pos)
+    return buf[pos:end].decode("utf-8", "replace"), end + 1
+
+
+def parse_binary_kv(buf, pos, strings=None, depth=0):
+    if depth > 32:
+        raise ValueError("too deep")
+    out = {}
+    while True:
+        kind = buf[pos]
+        pos += 1
+        if kind == 0x08:
+            return out, pos
+        if strings is None:
+            key, pos = read_cstring(buf, pos)
+        else:
+            (index,) = struct.unpack_from("<I", buf, pos)
+            pos += 4
+            key = strings[index]
+        if kind == 0x00:
+            out[key], pos = parse_binary_kv(buf, pos, strings, depth + 1)
+        elif kind == 0x01:
+            out[key], pos = read_cstring(buf, pos)
+        elif kind in (0x02, 0x03, 0x04, 0x06):
+            (out[key],) = struct.unpack_from("<f" if kind == 0x03 else "<i", buf, pos)
+            pos += 4
+        elif kind in (0x07, 0x0A):
+            (out[key],) = struct.unpack_from("<Q" if kind == 0x07 else "<q", buf, pos)
+            pos += 8
+        else:
+            raise ValueError("unknown type %#x" % kind)
+
+
+def load_appinfo(root, wanted):
+    """{appid: (name, type)} from appinfo.vdf (format 0x07564429 or
+    0x07564428), for the app ids in wanted only. A truncated or half-written
+    file gives what was read before the damage."""
+    buf = read_file(os.path.join(root, "appcache/appinfo.vdf"), MAX_BINARY)
+    apps = {}
+    if not buf or len(buf) < 16 or not wanted:
+        return apps
+    magic = struct.unpack_from("<I", buf, 0)[0]
+    strings, pos = None, 8
+    try:
+        # Newer files keep every key in a string table at the end.
+        if magic == 0x07564429:
+            (table,) = struct.unpack_from("<q", buf, 8)
+            (count,) = struct.unpack_from("<I", buf, table)
+            strings, cursor = [], table + 4
+            for _ in range(count):
+                value, cursor = read_cstring(buf, cursor)
+                strings.append(value)
+            pos = 16
+        elif magic != 0x07564428:
+            return apps
+        while pos + 8 <= len(buf):
+            appid, size = struct.unpack_from("<II", buf, pos)
+            if appid == 0:
+                break
+            if appid in wanted:
+                try:
+                    kv, _ = parse_binary_kv(buf, pos + 8 + 60, strings)
+                    common = child(kv, "appinfo", "common") or child(kv, "common")
+                    if common:
+                        apps[appid] = (printable(child(common, "name")), str(child(common, "type")).lower())
+                except (ValueError, IndexError, struct.error):
+                    pass
+            pos += 8 + size
+    except (ValueError, IndexError, struct.error):
+        pass
+    return apps
+
+
+def load_owned(root, licenses=None):
+    """App ids granted by the account's packages: every package cached in
+    packageinfo.vdf, or only those in licenses when they are known. Package 0
+    is Steam's own."""
+    buf = read_file(os.path.join(root, "appcache/packageinfo.vdf"), MAX_BINARY)
+    owned = set()
+    if not buf or len(buf) < 8:
+        return owned
+    magic = struct.unpack_from("<I", buf, 0)[0]
+    if magic not in (0x06565527, 0x06565528):
+        return owned
+    pos = 8
+    try:
+        while pos + 4 <= len(buf):
+            (package,) = struct.unpack_from("<I", buf, pos)
+            if package == 0xFFFFFFFF:
+                break
+            pos += 4 + 20 + 4 + (8 if magic == 0x06565528 else 0)
+            kv, pos = parse_binary_kv(buf, pos)
+            if package == 0 or (licenses is not None and package not in licenses):
+                continue
+            body = kv.get(str(package), kv)
+            for value in (child(body, "appids") or {}).values():
+                if as_int(value) > 0:
+                    owned.add(as_int(value))
+    except (ValueError, IndexError, struct.error):
+        pass
+    return owned
+
+
+# ---- Licenses ---------------------------------------------------------------
+
+# packageinfo.vdf caches every package the client ever looked at, refunded
+# ones included. The license cache holds the real list: a
+# CMsgClientLicenseList protobuf, XORed byte by byte with Valve's
+# CUniformRandomStream (ran1 from Numerical Recipes, as in the Source SDK)
+# seeded with the account id, one RandomInt(32, 126) per byte, and closed by
+# the CRC32 of the rest. The format is undocumented, so anything unexpected
+# falls back to packageinfo.vdf alone.
+LICENSE_GONE = 0x08 | 0x10 | 0x20   # ELicenseFlags Expired, CancelledByUser, CancelledByAdmin
+
+
+class UniformRandomStream:
+    IA, IM, IQ, IR, NTAB = 16807, 2147483647, 127773, 2836, 32
+    NDIV = 1 + (IM - 1) // NTAB
+    MAX_RANDOM = 0x7FFFFFFF
+
+    def __init__(self, seed):
+        self.idum = seed if seed < 0 else -seed
+        self.iy = 0
+        self.iv = [0] * self.NTAB
+
+    def _step(self):
+        k = self.idum // self.IQ
+        self.idum = self.IA * (self.idum - k * self.IQ) - self.IR * k
+        if self.idum < 0:
+            self.idum += self.IM
+
+    def generate(self):
+        if self.idum <= 0 or not self.iy:
+            self.idum = 1 if -self.idum < 1 else -self.idum
+            for j in range(self.NTAB + 7, -1, -1):
+                self._step()
+                if j < self.NTAB:
+                    self.iv[j] = self.idum
+            self.iy = self.iv[0]
+        self._step()
+        j = self.iy // self.NDIV
+        self.iy = self.iv[j]
+        self.iv[j] = self.idum
+        return self.iy
+
+    def random_int(self, low, high):
+        span = high - low + 1
+        limit = self.MAX_RANDOM - ((self.MAX_RANDOM + 1) % span)
+        while True:
+            value = self.generate()
+            if value <= limit:
+                return low + value % span
+
+
+def read_varint(buf, pos):
+    value = shift = 0
+    while True:
+        byte = buf[pos]
+        pos += 1
+        value |= (byte & 0x7F) << shift
+        if byte < 0x80:
+            return value, pos
+        shift += 7
+        if shift > 63:
+            raise ValueError("varint too long")
+
+
+def protobuf_fields(buf):
+    """(field, wire type, value) for each field of one protobuf message:
+    numbers as ints, length-delimited fields as bytes."""
+    pos = 0
+    while pos < len(buf):
+        key, pos = read_varint(buf, pos)
+        field, wire = key >> 3, key & 7
+        if wire == 0:
+            value, pos = read_varint(buf, pos)
+        elif wire == 1:
+            (value,) = struct.unpack_from("<Q", buf, pos)
+            pos += 8
+        elif wire == 5:
+            (value,) = struct.unpack_from("<I", buf, pos)
+            pos += 4
+        elif wire == 2:
+            size, pos = read_varint(buf, pos)
+            if pos + size > len(buf):
+                raise ValueError("truncated field")
+            value, pos = buf[pos:pos + size], pos + size
+        else:
+            raise ValueError("wire type %d" % wire)
+        yield field, wire, value
+
+
+def scramble(data, account):
+    """The license cache's XOR stream; applying it twice gives the input back."""
+    stream = UniformRandomStream(account)
+    return bytes(byte ^ stream.random_int(32, 126) for byte in data)
+
+
+def load_licenses(root, user):
+    """Package ids the account holds a live license for, or None when the
+    license cache can't be read for certain (then every cached package counts)."""
+    if not user or not user.isdigit():
+        return None
+    data = read_file(os.path.join(root, "userdata", user, "config/licensecache"), MAX_LICENSES)
+    if not data or len(data) < 5:
+        return None
+    plain = scramble(data, int(user))
+    body, (crc,) = plain[:-4], struct.unpack("<I", plain[-4:])
+    if zlib.crc32(body) != crc:
+        return None
+    packages, found = set(), 0
+    try:
+        for field, wire, value in protobuf_fields(body):
+            if field != 2 or wire != 2:
+                continue
+            package, flags = None, 0
+            for inner, inner_wire, item in protobuf_fields(value):
+                if inner == 1 and inner_wire == 0:
+                    package = item
+                elif inner == 7 and inner_wire == 0:
+                    flags = item
+            if package is None:
+                continue
+            found += 1
+            if not flags & LICENSE_GONE:
+                packages.add(package)
+    except (ValueError, IndexError, struct.error):
+        return None
+    return packages if found else None
+
+
+# ---- The account ------------------------------------------------------------
+
+def current_user(root):
+    """The userdata folder of the account that logged in last."""
+    login = load_text_vdf(os.path.join(root, "config/loginusers.vdf"))
+    users = child(login, "users") or {}
+    best, best_time = None, -1
+    for steamid, info in users.items():
+        if not steamid.isdigit() or not isinstance(info, dict):
+            continue
+        stamp = as_int(child(info, "Timestamp"))
+        if child(info, "MostRecent") == "1":
+            stamp = 1 << 62
+        if stamp > best_time:
+            best, best_time = steamid, stamp
+    if best:
+        account = str(int(best) - STEAMID64_BASE)
+        if account.isdigit() and os.path.isdir(os.path.join(root, "userdata", account)):
+            return account
+    dirs = [d for d in glob.glob(os.path.join(root, "userdata/*")) if os.path.basename(d).isdigit()]
+    return os.path.basename(max(dirs, key=os.path.getmtime)) if dirs else None
+
+
+def load_played(root, user):
+    """{appid: (last played, minutes played)} from localconfig.vdf."""
+    played = {}
+    if not user:
+        return played
+    config = load_text_vdf(os.path.join(root, "userdata", user, "config/localconfig.vdf"))
+    apps = child(config, "UserLocalConfigStore", "Software", "Valve", "Steam", "apps")
+    for appid, info in (apps or {}).items():
+        if APPID.match(appid) and isinstance(info, dict):
+            played[int(appid)] = (max(0, as_int(child(info, "LastPlayed"))), max(0, as_int(child(info, "Playtime"))))
+    return played
+
+
+# ---- The library ------------------------------------------------------------
+
+def installed_games(libs):
+    found = {}
+    for index, lib in enumerate(libs):
+        for manifest in sorted(glob.glob(os.path.join(lib["path"], "steamapps/appmanifest_*.acf"))):
+            state = child(load_text_vdf(manifest), "AppState")
+            appid = as_int(child(state, "appid"), -1)
+            if appid <= 0 or appid in found:
+                continue
+            found[appid] = {
+                "library": index,
+                "name": printable(child(state, "name")),
+                "size": max(0, as_int(child(state, "SizeOnDisk"))),
+                "lastPlayed": max(0, as_int(child(state, "LastPlayed"))),
+            }
+    return found
+
+
+def library(root):
+    libs = libraries(root)
+    installed = installed_games(libs)
+    user = current_user(root)
+    owned = load_owned(root, load_licenses(root, user))
+    appinfo = load_appinfo(root, owned | set(installed))
+    played = load_played(root, user)
+
+    # Installed tools (Proton, runtimes, redistributables) aren't games.
+    installed = {a: g for a, g in installed.items() if a not in appinfo or appinfo[a][1] == "game"}
+
+    games = []
+    for appid in sorted({a for a in owned if appid_is_game(appinfo, a)} | set(installed)):
+        local = installed.get(appid)
+        name = (appinfo.get(appid) or ("", ""))[0] or (local or {}).get("name", "")
+        if not name:
+            continue
+        last, minutes = played.get(appid, (0, 0))
+        if local and local["lastPlayed"] > last:
+            last = local["lastPlayed"]
+        games.append({
+            "id": str(appid),
+            "name": name,
+            "installed": local is not None,
+            "library": local["library"] if local else -1,
+            "size": local["size"] if local else 0,
+            "lastPlayed": last,
+            "playtime": minutes,
+        })
+        if len(games) >= MAX_GAMES:
+            break
+
+    disks = drives(libs, installed)
+    for game in games:
+        game["drive"] = libs[game["library"]]["drive"] if game["installed"] else -1
+        del game["library"]
+    games.sort(key=lambda g: g["name"].lower())
+    return {"ok": True, "uwsm": shutil.which("uwsm-app") is not None, "drives": disks, "games": games}
+
+
+def appid_is_game(appinfo, appid):
+    return appid in appinfo and appinfo[appid][1] == "game"
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Print the Steam library as JSON")
+    parser.add_argument("--root", help="the Steam folder to read (default: found under ~)")
+    args = parser.parse_args()
+    root = os.path.realpath(args.root) if args.root else steam_root()
+    if not root or not os.path.isdir(os.path.join(root, "steamapps")):
+        print(json.dumps({"ok": False, "error": "steam-not-found"}))
+        return
+    print(json.dumps(library(root), ensure_ascii=False, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as error:  # Never hand the shell a traceback instead of JSON.
+        print(json.dumps({"ok": False, "error": type(error).__name__}))
