@@ -1019,29 +1019,59 @@ Panel {
 
             PanelSeparator { foreground: root.fg }
 
-            Text {
-              visible: root.gmItems.length > 0
-              width: parent.width
-              textFormat: Text.PlainText
-              text: strings.t(root.gameOn ? "gm.headerOn" : "gm.headerOff")
-              color: root.dimFg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
-            }
-
-            SmallToggle {
+            // The caption, with the switch for every item at its right end,
+            // lined up with the rows' switches.
+            Item {
               id: gmAllRow
               visible: root.gmItems.length > 0
-              width: gamePage.width
-              label: strings.t("gm.all")
-              description: root.gmGroupSummary(root.gmAll)
-              checked: root.gmGroupOn(root.gmAll)
-              hasCursor: root.cursorOn("gm-all")
-              onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(gmAllRow)
-              foreground: root.fg
-              onClicked: root.toggleGmGroup("all")
-              onHovered: function(h) { if (h) root.point("gm-all", 0) }
+              width: parent.width
+              implicitHeight: Math.max(gmHeader.implicitHeight, gmAllSwitch.implicitHeight)
+
+              Text {
+                id: gmHeader
+                anchors.left: parent.left
+                anchors.right: gmAllLabel.left
+                anchors.rightMargin: Style.spacing.sm
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: strings.t(root.gameOn ? "gm.headerOn" : "gm.headerOff")
+                color: root.dimFg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
+              Text {
+                id: gmAllLabel
+                anchors.right: gmAllSwitch.left
+                anchors.rightMargin: Style.space(6)
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: strings.t("gm.all")
+                color: root.dimFg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.toggleGmGroup("all")
+                }
+              }
+
+              ToggleSwitch {
+                id: gmAllSwitch
+                checked: root.gmGroupOn(root.gmAll)
+                hasCursor: root.cursorOn("gm-all")
+                onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(gmAllRow)
+                trackHeight: Style.space(16)
+                foreground: root.fg
+                anchors.right: parent.right
+                anchors.rightMargin: Style.spacing.sm + Style.space(2) - (cursorRing ? cursorPad : 0)
+                anchors.verticalCenter: parent.verticalCenter
+                onToggled: root.toggleGmGroup("all")
+                onHovered: function(h) { if (h) root.point("gm-all", 0) }
+              }
             }
 
             // Indexed rather than bound to the arrays, so a reading doesn't
