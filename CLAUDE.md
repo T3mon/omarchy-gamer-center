@@ -13,7 +13,7 @@ Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how O
 | `Panel.qml` | Bar icon (gamepad) and the panel with its Stats, Game mode and Steam pages. Left-click opens the panel, right-click toggles the overlay, middle-click toggles game mode |
 | `gamemode/GameMode.qml` | Game mode state, owned by the service: reads `gamercenter-gamemode status`, cleans it, starts switches detached |
 | `steam/Steam.qml` | The Steam library, owned by the service: reads `gamercenter-steam` while a panel shows the Steam page, opens steam:// links |
-| `steam/Library.js` | Pure JS for the Steam page: cleaning the reading, the two lists and their sort, the steam:// links. Tested in Node |
+| `steam/Library.js` | Pure JS for the Steam page: cleaning the reading, the two lists and their sort, cover paths and URLs, days ago, the steam:// links. Tested in Node |
 | `overlay/Metrics.js` | Pure JS with no QML types: settings defaults and sanitizing, positions, turning a stats sample into HUD lines. Tested in Node |
 | `overlay/HudWindow.qml` | Layer-shell window on the Overlay layer: click-through, no keyboard focus, namespace `gamer-center-hud` |
 | `overlay/HudCard.qml` | Draws the HUD (stacked grid or one line). The panel reuses it for its preview |
@@ -50,12 +50,14 @@ Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how O
 
 ## Steam
 
-- Bare minimum on purpose, as asked: drives, Installed / Not installed, sort (Recent, Name, Size), details with time played, Launch, Install, Uninstall. Nothing else until asked.
-- `gamercenter-steam` reads, under the Steam root: `libraryfolders.vdf`, every `appmanifest_*.acf` (installed, `SizeOnDisk`), `userdata/<id>/config/licensecache` (live licenses; unscrambled with the account id as seed, CRC-checked, refunded and expired flags dropped), `appcache/packageinfo.vdf` (apps per package), `appcache/appinfo.vdf` (name and type, parsed only for owned or installed ids), `localconfig.vdf` (LastPlayed, Playtime in minutes). Only type `game` is listed; tools and DLC aren't. No licensecache means every cached package counts.
+- Bare minimum on purpose, as asked: drives, Installed / Not installed, sort (Recent, Name, Size), details with time played, Launch, Install, Uninstall, and local covers. Laid out like Quick Steam (list left, details right, drives along the bottom), without its search, ProtonDB, Store button or key hints. Nothing else until asked.
+- `gamercenter-steam` reads, under the Steam root: `libraryfolders.vdf`, every `appmanifest_*.acf` (installed, `SizeOnDisk`), `userdata/<id>/config/licensecache` (live licenses; unscrambled with the account id as seed, CRC-checked, refunded and expired flags dropped), `appcache/packageinfo.vdf` (apps per package), `appcache/appinfo.vdf` (name and type, parsed only for owned or installed ids), `localconfig.vdf` (LastPlayed, Playtime in minutes), and covers from `appcache/librarycache/<appid>/`: the file appinfo's `library_assets_full.library_capsule.image` names (checked against `SAFE_ASSET`), else `library_600x900.jpg`, else any `*/library_capsule.jpg`. Never fetched; `Library.cover()` only lets through paths in that cache. Only type `game` is listed; tools and DLC aren't. No licensecache means every cached package counts.
 - Drives are merged by `st_dev`: one row per disk, with `statvfs` free and total.
 - `Steam.qml` runs the helper when a panel's Steam page opens (`watchers`) and every 5 s while it stays open; an unchanged reading is skipped. A reading takes about 0.1 s here (118 games).
 - Actions are `steam://rungameid/N`, `steam://install/N`, `steam://uninstall/N` through `uwsm-app -- xdg-open URL` (plain `xdg-open` without uwsm). Install and Uninstall open Steam's own dialog (drive pick, confirm); the panel closes after any action. Quick Steam's `steam -silent +app_install ID FOLDER` path is not used.
-- The details view replaces the list (`stGameId`); Esc and Back return to the same scroll spot. Rows are indexed Repeaters over `stGames`, so a new reading updates them in place.
+- The page is wider than the others (`contentWidth` 760 vs 400). The list is a `ListView` with an int model over `stGames`, so a new reading updates rows in place. `stGameId` is the picked game; `stIndex` falls back to the first row, so the right side is never empty while there are games.
+- Keyboard rows: `st-top` (two tabs, then the sorts), `st-game-i` (moving onto one picks it), `st-actions`. Right on a game goes to the buttons; left at the first button, or up, goes back. Esc closes the panel.
+- Dates: `Library.daysAgo()` counts calendar days from `stNow`, set when the panel opens: today, yesterday, N days ago under 30, else "MMM yyyy".
 
 ## Stats helper
 
@@ -95,7 +97,7 @@ omarchy plugin validate .
 - Automatic mode with a real game running.
 - Middle-click on the bar icon.
 - The All switch and the Docker folder's switch in the Game mode list (folding was checked).
-- The Steam page's Launch, Install and Uninstall (they start Steam or its dialogs), and its keyboard and mouse use: tab switch, sort, opening a game, Back, Esc. The list, a details view and the Not installed tab were checked in screenshots.
+- The Steam page's Launch, Install and Uninstall (they start Steam or its dialogs), and its keyboard and mouse use: tab switch, sort, picking a game, moving to the buttons. Both tabs with covers and the details side were checked in screenshots.
 
 ## Git
 

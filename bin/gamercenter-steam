@@ -12,7 +12,8 @@ leaves the machine. Under the Steam root:
                                         license for (see load_licenses)
   appcache/packageinfo.vdf              the apps in each package, so owned
                                         games that aren't installed show up
-  appcache/appinfo.vdf                  each app's name and type
+  appcache/appinfo.vdf                  each app's name, type and cover file
+  appcache/librarycache/<appid>/        the covers Steam already downloaded
   userdata/<id>/config/localconfig.vdf  last played and time played
 
 The VDF readers, the library list, the license cache and the package list
@@ -218,8 +219,40 @@ def parse_binary_kv(buf, pos, strings=None, depth=0):
             raise ValueError("unknown type %#x" % kind)
 
 
+SAFE_ASSET = re.compile(r"^(?:[0-9a-f]{40}/)?[A-Za-z0-9_.-]{1,80}\.(?:jpg|png)$")
+
+
+def capsule_asset(common):
+    """The portrait cover's file, relative to the app's librarycache folder:
+    "<sha1>/library_capsule.jpg" for newer apps, "library_600x900.jpg" for
+    older ones, or "" when appinfo doesn't name a safe one."""
+    images = child(common, "library_assets_full", "library_capsule", "image")
+    if isinstance(images, dict):
+        value = images.get("english") or next(iter(images.values()), "")
+        if isinstance(value, str) and SAFE_ASSET.match(value):
+            return value
+    return ""
+
+
+def local_cover(root, appid, asset):
+    """The cover Steam already downloaded for the app, or "". Nothing is
+    fetched: a game Steam has no art for gets none."""
+    base = os.path.join(root, "appcache/librarycache", str(appid))
+    if not os.path.isdir(base):
+        return ""
+    for name in ([asset] if asset else []) + ["library_600x900.jpg"]:
+        path = os.path.join(base, name)
+        if os.path.isfile(path):
+            return path
+    for pattern in ("*/library_capsule.jpg", "*/library_600x900.jpg"):
+        found = sorted(glob.glob(os.path.join(base, pattern)))
+        if found:
+            return found[0]
+    return ""
+
+
 def load_appinfo(root, wanted):
-    """{appid: (name, type)} from appinfo.vdf (format 0x07564429 or
+    """{appid: (name, type, cover asset)} from appinfo.vdf (format 0x07564429 or
     0x07564428), for the app ids in wanted only. A truncated or half-written
     file gives what was read before the damage."""
     buf = read_file(os.path.join(root, "appcache/appinfo.vdf"), MAX_BINARY)
@@ -249,7 +282,8 @@ def load_appinfo(root, wanted):
                     kv, _ = parse_binary_kv(buf, pos + 8 + 60, strings)
                     common = child(kv, "appinfo", "common") or child(kv, "common")
                     if common:
-                        apps[appid] = (printable(child(common, "name")), str(child(common, "type")).lower())
+                        apps[appid] = (printable(child(common, "name")), str(child(common, "type")).lower(),
+                                       capsule_asset(common))
                 except (ValueError, IndexError, struct.error):
                     pass
             pos += 8 + size
@@ -485,7 +519,8 @@ def library(root):
     games = []
     for appid in sorted({a for a in owned if appid_is_game(appinfo, a)} | set(installed)):
         local = installed.get(appid)
-        name = (appinfo.get(appid) or ("", ""))[0] or (local or {}).get("name", "")
+        info = appinfo.get(appid) or ("", "", "")
+        name = info[0] or (local or {}).get("name", "")
         if not name:
             continue
         last, minutes = played.get(appid, (0, 0))
@@ -499,6 +534,7 @@ def library(root):
             "size": local["size"] if local else 0,
             "lastPlayed": last,
             "playtime": minutes,
+            "cover": local_cover(root, appid, info[2]),
         })
         if len(games) >= MAX_GAMES:
             break

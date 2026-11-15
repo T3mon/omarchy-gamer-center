@@ -73,10 +73,14 @@ def kv_bytes(node, strings=None):
     return out + b"\x08"
 
 
-def appinfo_bytes(apps):
+def appinfo_bytes(apps, covers=None):
+    """covers: app id -> the capsule file appinfo names for it."""
     strings, body = [], b""
     for appid, (name, kind) in apps.items():
-        kv = kv_bytes({"appinfo": {"appid": appid, "common": {"name": name, "type": kind}}}, strings)
+        common = {"name": name, "type": kind}
+        if covers and appid in covers:
+            common["library_assets_full"] = {"library_capsule": {"image": {"english": covers[appid]}}}
+        kv = kv_bytes({"appinfo": {"appid": appid, "common": common}}, strings)
         body += struct.pack("<II", appid, 60 + len(kv)) + b"\0" * 60 + kv
     body += struct.pack("<I", 0)
     table = 16 + len(body)
@@ -149,7 +153,9 @@ class FakeSteam:
             handle.write(text)
 
     def write_bytes(self, rel, data):
-        with open(os.path.join(self.root, rel), "wb") as handle:
+        path = os.path.join(self.root, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as handle:
             handle.write(data)
 
 
@@ -221,6 +227,35 @@ class SteamLibraryTest(unittest.TestCase):
     def test_control_characters_are_stripped_from_names(self):
         self.fake.manifest(self.fake.root, 777, "Bad\x1b[31m\nName", 1)
         self.assertIn("Bad [31m Name", self.games())
+
+    def test_covers_come_from_steams_own_cache(self):
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        cache = "appcache/librarycache/%d/"
+        # Manor Lords: the file appinfo names. Teamfight: the older fixed name.
+        # RimWorld: appinfo names nothing, a hashed folder holds one.
+        self.fake.write_bytes(cache % MANOR + sha + "/library_capsule.jpg", b"jpg")
+        self.fake.write_bytes(cache % MANOR + "library_600x900.jpg", b"older")
+        self.fake.write_bytes(cache % TEAMFIGHT + "library_600x900.jpg", b"jpg")
+        self.fake.write_bytes(cache % RIMWORLD + "f" * 40 + "/library_capsule.jpg", b"jpg")
+        self.fake.write_bytes("appcache/appinfo.vdf", appinfo_bytes(APPS, {MANOR: sha + "/library_capsule.jpg"}))
+        games = self.games()
+        base = os.path.join(self.fake.root, "appcache", "librarycache")
+        self.assertEqual(games["Manor Lords"]["cover"], os.path.join(base, str(MANOR), sha, "library_capsule.jpg"))
+        self.assertEqual(games["Teamfight Manager"]["cover"], os.path.join(base, str(TEAMFIGHT), "library_600x900.jpg"))
+        self.assertEqual(games["RimWorld"]["cover"], os.path.join(base, str(RIMWORLD), "f" * 40, "library_capsule.jpg"))
+
+    def test_no_cover_without_cached_art_and_no_paths_out_of_the_cache(self):
+        outside = os.path.join(self.tmp.name, "secret.jpg")
+        Path(outside).write_bytes(b"x")
+        self.fake.write_bytes("appcache/appinfo.vdf", appinfo_bytes(APPS, {
+            MANOR: "../../../../secret.jpg", TEAMFIGHT: "/etc/passwd.jpg"}))
+        os.makedirs(os.path.join(self.fake.root, "appcache", "librarycache", str(MANOR)))
+        games = self.games()
+        self.assertEqual(games["Manor Lords"]["cover"], "")
+        self.assertEqual(games["Teamfight Manager"]["cover"], "")
+        self.assertEqual(games["RimWorld"]["cover"], "")
+        for bad in ("../x.jpg", "a/b.jpg", "x.svg", "%s/x.jpg" % ("g" * 40), ""):
+            self.assertEqual(steam.capsule_asset({"library_assets_full": {"library_capsule": {"image": {"english": bad}}}}), "")
 
     def test_scramble_is_its_own_inverse(self):
         data = os.urandom(200)

@@ -4,7 +4,7 @@ Game tools for the Omarchy shell. The panel has three pages:
 
 - **Stats:** a HUD over your games (CPU and GPU load, temperature and clock, GPU power, RAM, VRAM, battery draw and the time) and a switch for MangoHud's in-game FPS counter.
 - **Game mode:** frees memory before you play by closing big apps, stopping Docker projects and the file indexer, then brings them all back afterwards.
-- **Steam:** your Steam games, installed or not, with their size, time played, and Launch, Install and Uninstall, plus the free space on each drive with a Steam library.
+- **Steam:** your Steam games, installed or not, with their covers, size, time played, and Launch, Install and Uninstall, plus the free space on each drive with a Steam library.
 
 ## Install
 
@@ -44,11 +44,14 @@ Chromium-based browsers rewrite their command line into one string; it's split b
 
 ## Steam
 
-The Steam page reads Steam's own files on disk; nothing goes online.
+The Steam page reads Steam's own files on disk; nothing goes online, covers included.
 
-- At the top, each drive that holds a Steam library: how much is free, with a bar of how full it is.
 - **Installed** and **Not installed** split the games you own. Sort them by **Recent** (last played), **Name** or **Size** (installed games only).
-- Click a game for its details: time played, its size and drive, and **Launch**, **Install** or **Uninstall**. Install and Uninstall open Steam's own dialog, where you pick the drive or confirm. Esc goes back to the list.
+- The list on the left shows each game's cover, when you last played it and its size. The game you pick shows on the right: a big cover, when you last played it and for how long, its size and drive, and **Launch**, **Install** or **Uninstall**. Install and Uninstall open Steam's own dialog, where you pick the drive or confirm.
+- Along the bottom, each drive that holds a Steam library: how much is free, with a bar of how full it is.
+- Keyboard: up and down move through the games, right goes to the buttons, left comes back.
+
+Covers are the ones Steam already keeps in `appcache/librarycache`. A game Steam has no art for shows a gamepad instead.
 
 Owned games come from your account's license cache, so refunded games and expired free weekends are left out. Tools such as Proton, and DLC, aren't listed. The library reading is ported from [omarchy-quick-steam](https://github.com/Rysen-Winters/omarchy-quick-steam) by Rysen Winters (MIT, see `licenses/omarchy-quick-steam.txt`).
 

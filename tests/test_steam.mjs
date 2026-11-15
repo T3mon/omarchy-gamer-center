@@ -99,6 +99,39 @@ test("links open through uwsm-app when it is there", () => {
   assert.deepEqual(plain(L.openCommand("steam://install/1", false)), ["xdg-open", "steam://install/1"])
 })
 
+test("covers are files in Steam's cover cache only", () => {
+  const good = "/home/u/.local/share/Steam/appcache/librarycache/1363080/0123abc/library_capsule.jpg"
+  assert.equal(L.cover(good), good)
+  assert.equal(L.cover("/s/appcache/librarycache/7/library_600x900.jpg"), "/s/appcache/librarycache/7/library_600x900.jpg")
+  for (const bad of [null, 5, "", "relative/appcache/librarycache/1/a.jpg", "/etc/passwd",
+                     "/s/appcache/librarycache/1/../../../etc/x.jpg", "/s/appcache/librarycache/x/a.jpg",
+                     "/s/appcache/librarycache/1/a.svg", "/s/appcache/librarycache/1/a\n.jpg",
+                     "/s/appcache/librarycache/1/./a.jpg", "/" + "x".repeat(1100) + "/appcache/librarycache/1/a.jpg"]) {
+    assert.equal(L.cover(bad), "")
+  }
+  const data = reading()
+  data.games[0].cover = good
+  data.games[1].cover = "/etc/shadow"
+  const games = L.clean(data).games
+  assert.deepEqual([games[0].cover, games[1].cover, games[2].cover], [good, "", ""])
+})
+
+test("cover URLs escape every path segment", () => {
+  assert.equal(L.coverUrl("/s/appcache/librarycache/1/a.jpg"), "file:///s/appcache/librarycache/1/a.jpg")
+  assert.equal(L.coverUrl("/my disk/#1?/appcache/librarycache/1/a.jpg"), "file:///my%20disk/%231%3F/appcache/librarycache/1/a.jpg")
+  assert.equal(L.coverUrl("/etc/passwd"), "")
+})
+
+test("days ago counts calendar days", () => {
+  const now = new Date(2026, 10, 16, 0, 30).getTime()
+  const at = (...parts) => new Date(...parts).getTime() / 1000
+  assert.equal(L.daysAgo(at(2026, 10, 16, 0, 5), now), 0)
+  assert.equal(L.daysAgo(at(2026, 10, 15, 23, 50), now), 1)    // twenty minutes, but yesterday
+  assert.equal(L.daysAgo(at(2026, 10, 1, 12, 0), now), 15)
+  assert.equal(L.daysAgo(at(2026, 11, 1), now), 0)              // a clock in the future
+  for (const never of [0, -5, NaN, null, undefined, "x"]) assert.equal(L.daysAgo(never, now), -1)
+})
+
 test("used share stays between 0 and 1", () => {
   assert.equal(L.usedShare({ free: 400, total: 500 }), 0.2)
   assert.equal(L.usedShare({ free: 0, total: 0 }), 0)

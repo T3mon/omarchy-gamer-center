@@ -20,6 +20,28 @@ function count(v) {
   return typeof v === "number" && isFinite(v) && v > 0 ? Math.round(v) : 0
 }
 
+// A cover is a file in Steam's own cover cache, nothing else.
+function cover(v) {
+  return typeof v === "string" && v.length <= 1024 && /^\/[^\u0000-\u001f]*\/appcache\/librarycache\/[0-9]{1,10}\/[^\u0000-\u001f]+\.(jpg|png)$/.test(v)
+    && v.indexOf("/../") === -1 && v.indexOf("/./") === -1 ? v : ""
+}
+
+// file:// URL for a cover path, each segment escaped.
+function coverUrl(path) {
+  var p = cover(path)
+  return p ? "file://" + p.split("/").map(encodeURIComponent).join("/") : ""
+}
+
+// Whole calendar days between a Unix time and now (ms): 0 today, 1 yesterday.
+// -1 for never.
+function daysAgo(seconds, nowMs) {
+  if (!(seconds > 0)) return -1
+  var then = new Date(seconds * 1000), now = new Date(nowMs)
+  var a = new Date(then.getFullYear(), then.getMonth(), then.getDate())
+  var b = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  return Math.max(0, Math.round((b - a) / 86400000))
+}
+
 // The helper's JSON, parsed. Returns { uwsm, drives, games }, or null when it
 // isn't a library reading.
 function clean(data) {
@@ -54,7 +76,8 @@ function clean(data) {
       size: installed ? count(g.size) : 0,
       drive: where,
       lastPlayed: count(g.lastPlayed),
-      playtime: count(g.playtime)
+      playtime: count(g.playtime),
+      cover: cover(g.cover)
     })
   }
   return { uwsm: data.uwsm === true, drives: drives, games: games }

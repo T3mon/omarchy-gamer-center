@@ -40,7 +40,8 @@ Panel {
   readonly property bool gameOn: !!gm && gm.gameOn
   readonly property var gmItems: gm ? gm.items : []
 
-  // Steam: which list shows, its order, and the game whose details are open.
+  // Steam: which list shows, its order, and the game shown on the right
+  // (the one picked, else the list's first).
   readonly property var steamModel: service ? service.steam : null
   readonly property string stPhase: steamModel ? steamModel.phase : "reading"
   readonly property var stDrives: steamModel ? steamModel.drives : []
@@ -49,10 +50,17 @@ Panel {
   property string stGameId: ""
   readonly property string stSortShown: Library.sortFor(stSort, stInstalled)
   readonly property var stGames: steamModel ? Library.list(steamModel.games, stInstalled, stSort) : []
-  readonly property var stGame: stGameId !== "" && steamModel ? steamModel.game(stGameId) : null
+  readonly property int stIndex: {
+    for (var i = 0; i < stGames.length; i++) if (stGames[i].id === stGameId) return i
+    return stGames.length ? 0 : -1
+  }
+  readonly property var stGame: stIndex >= 0 ? stGames[stIndex] : null
+  readonly property var stActions: !stGame ? [] : stGame.installed ? ["run", "uninstall"] : ["install"]
   readonly property var stSortOptions: ["recent", "name", "size"]
     .filter(function(v) { return stInstalled || v !== "size" })
     .map(function(v) { return { value: v, label: strings.t("steam.sort." + v) } })
+  // "Today" and "yesterday" are counted from when the panel opened.
+  property double stNow: Date.now()
 
   // serviceFor() is a plain lookup, not a binding: ask again whenever the
   // answer could have changed, and keep asking until the service is up.
@@ -99,53 +107,52 @@ Panel {
   function bytes(b) { return size(b / 1048576) }
 
   function playedText(minutes) {
-    if (minutes <= 0) return strings.t("steam.notPlayed")
-    if (minutes < 60) return strings.t("steam.minutes").arg(Commons.I18n.formatNumber(minutes))
-    return strings.t("steam.hours").arg(Commons.I18n.formatNumber(minutes / 60, 1))
+    if (minutes < 60) return strings.t("steam.minutesPlayed").arg(Commons.I18n.formatNumber(minutes))
+    return strings.t("steam.hoursPlayed").arg(Commons.I18n.formatNumber(minutes / 60, 1))
   }
 
-  function driveLabel(game) {
-    var d = game && game.drive >= 0 ? stDrives[game.drive] : null
-    return d ? d.label : "Steam"
+  // "today", "yesterday", "3 days ago", else the month; "" for never.
+  function whenText(seconds) {
+    var days = Library.daysAgo(seconds, stNow)
+    if (days < 0) return ""
+    if (days === 0) return strings.t("steam.today")
+    if (days === 1) return strings.t("steam.yesterday")
+    if (days < 30) return strings.tn("steam.daysAgo", days).arg(Commons.I18n.formatNumber(days))
+    return new Date(seconds * 1000).toLocaleDateString(Qt.locale(Commons.I18n.formatLocale), "MMM yyyy")
   }
 
-  // The panel's scroll position: read it, or set it with a number.
-  function scrollY(value) {
-    var area = panel.loadedContent ? panel.loadedContent.scrollArea : null
-    var flick = area ? area.contentItem : null
-    if (!flick || flick.contentY === undefined) return 0
-    if (value !== undefined) flick.contentY = value
-    return flick.contentY
+  // Under a game's name in the list: when it was last played, its size.
+  function rowCaption(game) {
+    var parts = []
+    var when = whenText(game.lastPlayed)
+    if (when) parts.push(when)
+    if (game.installed) parts.push(bytes(game.size))
+    return parts.join(" · ")
+  }
+
+  function playedLine(game) {
+    var when = whenText(game.lastPlayed)
+    if (!when && game.playtime <= 0) return strings.t("steam.notPlayed")
+    var parts = []
+    if (when) parts.push(strings.t("steam.lastPlayed").arg(when))
+    if (game.playtime > 0) parts.push(playedText(game.playtime))
+    return parts.join(" · ")
+  }
+
+  function sizeLine(game) {
+    var d = game.drive >= 0 ? stDrives[game.drive] : null
+    return strings.t("steam.sizeOn").arg(bytes(game.size)).arg(d ? d.label : "Steam")
   }
 
   function setSteamTab(installed) {
     if (stInstalled === installed) return
     stInstalled = installed
-    scrollY(0)
-  }
-
-  // Opening a game swaps the list for its details; the cursor lands on the
-  // first action when the keyboard opened it. Back returns to the same spot.
-  property real stListY: 0
-  function openGame(i) {
-    var g = stGames[i]
-    if (!g) return
-    stListY = scrollY()
-    stGameId = g.id
-    scrollY(0)
-    cursorRow = "st-actions"
-    cursorCol = 0
-    if (cursorByMouse) cursorActive = false
-  }
-
-  function closeGame() {
-    var id = stGameId
     stGameId = ""
-    var i = stGames.findIndex(function(g) { return g.id === id })
-    cursorRow = i >= 0 ? "st-game-" + i : "st-tab"
-    cursorCol = 0
-    var y = stListY
-    Qt.callLater(function() { root.scrollY(y) })
+  }
+
+  function selectGame(i) {
+    var g = stGames[i]
+    if (g) stGameId = g.id
   }
 
   // Launch, or Steam's own install or uninstall dialog. The panel closes so
@@ -153,7 +160,6 @@ Panel {
   function steamAction(action) {
     if (steamModel && stGame && steamModel.open(action, stGame.id)) close()
   }
-
 
   onPageChanged: syncPreview()
 
@@ -187,8 +193,8 @@ Panel {
     syncPreview()
     if (!opened) return
     if (service) service.refreshMango()
-    stGameId = ""
-    cursorRow = page === "stats" ? "enabled" : page === "gamemode" ? "gm-power" : "st-tab"
+    stNow = Date.now()
+    cursorRow = page === "stats" ? "enabled" : page === "gamemode" ? "gm-power" : "st-top"
     cursorCol = 0
     cursorActive = false
     cursorByMouse = false
@@ -415,12 +421,9 @@ Panel {
     var list = [{ id: "page", count: pages.length }]
     if (page === "steam") {
       if (stPhase !== "ready") return list
-      if (stGame) {
-        list.push({ id: "st-back", count: 1 }, { id: "st-actions", count: stGame.installed ? 2 : 1 })
-        return list
-      }
-      list.push({ id: "st-tab", count: 2 }, { id: "st-sort", count: stSortOptions.length })
+      list.push({ id: "st-top", count: 2 + stSortOptions.length })
       for (var s = 0; s < stGames.length; s++) list.push({ id: "st-game-" + s, count: 1 })
+      if (stActions.length) list.push({ id: "st-actions", count: stActions.length })
       return list
     }
     if (page === "gamemode") {
@@ -492,10 +495,26 @@ Panel {
     var rows = navRows
     var r = rowIndex(cursorRow)
     if (r < 0) { cursorRow = rows[0].id; cursorCol = 0; return }
+    // Steam: right from a game goes to its buttons, left or up comes back.
+    if (page === "steam") {
+      if (cursorRow === "st-actions" && (dy < 0 || (dx < 0 && cursorCol === 0))) {
+        cursorRow = stIndex >= 0 ? "st-game-" + stIndex : "st-top"
+        cursorCol = 0
+        return
+      }
+      if (cursorRow === "st-actions" && dy > 0) return
+      if (cursorRow.indexOf("st-game-") === 0 && dx > 0 && stActions.length) {
+        cursorRow = "st-actions"
+        cursorCol = 0
+        return
+      }
+    }
     if (dy !== 0) {
       var next = Math.max(0, Math.min(rows.length - 1, r + dy))
       cursorRow = rows[next].id
       cursorCol = Math.min(cursorCol, rows[next].count - 1)
+      // The details follow the keyboard through the games.
+      if (cursorRow.indexOf("st-game-") === 0) selectGame(Number(cursorRow.slice(8)))
       return
     }
     var row = rows[r]
@@ -512,11 +531,15 @@ Panel {
     var id = cursorRow
     var col = cursorCol
     if (id === "page") setPage(pages[col] || "stats")
-    else if (id === "st-tab") setSteamTab(col === 0)
-    else if (id === "st-sort") { if (stSortOptions[col]) stSort = stSortOptions[col].value }
-    else if (id.indexOf("st-game-") === 0) openGame(Number(id.slice(8)))
-    else if (id === "st-back") closeGame()
-    else if (id === "st-actions") { if (stGame) steamAction(stGame.installed ? (col === 0 ? "run" : "uninstall") : "install") }
+    else if (id === "st-top") {
+      if (col < 2) setSteamTab(col === 0)
+      else if (stSortOptions[col - 2]) stSort = stSortOptions[col - 2].value
+    }
+    else if (id.indexOf("st-game-") === 0) {
+      selectGame(Number(id.slice(8)))
+      if (stActions.length) { cursorRow = "st-actions"; cursorCol = 0 }
+    }
+    else if (id === "st-actions") { if (stActions[col]) steamAction(stActions[col]) }
     else if (id === "gm-power") toggleGameMode()
     else if (id === "gm-auto") { if (gm) gm.setAuto(!gm.autoEnabled) }
     else if (id === "gm-all") toggleGmGroup("all")
@@ -603,7 +626,7 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: panel.loadedContent
-    contentWidth: panel.fittedContentWidth(Style.space(400))
+    contentWidth: panel.fittedContentWidth(root.page === "steam" ? Style.space(760) : Style.space(400))
     contentHeight: panel.fittedContentHeight(panel.loadedContentHeight, Style.space(660))
 
     content: PanelKeyCatcher {
@@ -617,10 +640,7 @@ Panel {
         root.moveCursor(dx, dy)
       }
       onActivateRequested: if (root.cursorActive) root.activateCursor()
-      onCloseRequested: {
-        if (root.page === "steam" && root.stGame) root.closeGame()
-        else root.close()
-      }
+      onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
       ScrollView {
@@ -1244,14 +1264,17 @@ Panel {
           }
 
           // ---------- Steam ----------
-          Column {
+          // Games on the left, the picked one on the right, drives below.
+          Item {
             id: steamPage
             visible: root.page === "steam"
             width: parent.width
-            spacing: Style.space(10)
+            implicitHeight: root.stPhase === "ready" ? Style.space(500) : stStatus.implicitHeight
+            readonly property bool ready: root.stPhase === "ready"
 
             Text {
-              visible: root.stPhase !== "ready"
+              id: stStatus
+              visible: !steamPage.ready
               width: parent.width
               textFormat: Text.PlainText
               text: strings.t("steam." + root.stPhase)
@@ -1261,24 +1284,19 @@ Panel {
               wrapMode: Text.WordWrap
             }
 
-            // The list: drives, which games, their order, the games.
-            Column {
-              visible: root.stPhase === "ready" && !root.stGame
-              width: parent.width
-              spacing: Style.space(10)
-
-              Repeater {
-                model: root.stDrives.length
-
-                delegate: DriveRow {
-                  required property int index
-                  drive: root.stDrives[index] || null
-                }
-              }
-
-              PanelSeparator { foreground: root.fg }
+            // Which games, and their order: one keyboard row.
+            Item {
+              id: stTop
+              visible: steamPage.ready
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              implicitHeight: Math.max(stTabs.implicitHeight, stSorts.implicitHeight)
 
               ButtonGroup {
+                id: stTabs
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
                 options: [
                   { value: "installed", label: strings.t("steam.installed").arg(Commons.I18n.formatNumber(root.steamModel ? Library.countInstalled(root.steamModel.games, true) : 0)) },
                   { value: "other", label: strings.t("steam.notInstalled").arg(Commons.I18n.formatNumber(root.steamModel ? Library.countInstalled(root.steamModel.games, false) : 0)) }
@@ -1289,44 +1307,165 @@ Panel {
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 spacing: Style.spacing.xs
-                cursorIndex: root.cursorIndexFor("st-tab")
+                cursorIndex: { var c = root.cursorIndexFor("st-top"); return c >= 0 && c < 2 ? c : -1 }
                 onChanged: function(v) { root.setSteamTab(v === "installed") }
-                onHovered: function(i, h) { if (h) root.point("st-tab", i) }
+                onHovered: function(i, h) { if (h) root.point("st-top", i) }
               }
 
-              LabeledRow {
-                width: parent.width
-                label: strings.t("steam.sort")
+              ButtonGroup {
+                id: stSorts
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                options: root.stSortOptions
+                value: root.stSortShown
+                focusable: false
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                spacing: Style.spacing.xs
+                cursorIndex: { var c = root.cursorIndexFor("st-top"); return c >= 2 ? c - 2 : -1 }
+                onChanged: function(v) { root.stSort = v }
+                onHovered: function(i, h) { if (h) root.point("st-top", i + 2) }
+              }
+            }
 
-                ButtonGroup {
-                  options: root.stSortOptions
-                  value: root.stSortShown
-                  focusable: false
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.caption
-                  spacing: Style.spacing.xs
-                  cursorIndex: root.cursorIndexFor("st-sort")
-                  onChanged: function(v) { root.stSort = v }
-                  onHovered: function(i, h) { if (h) root.point("st-sort", i) }
+            // Indexed, so a new reading updates the rows in place.
+            ListView {
+              id: stList
+              visible: steamPage.ready
+              anchors.left: parent.left
+              anchors.top: stTop.bottom
+              anchors.topMargin: Style.space(10)
+              anchors.bottom: stDriveBox.top
+              anchors.bottomMargin: Style.space(10)
+              width: Math.round(parent.width * 0.42)
+              clip: true
+              spacing: Style.space(4)
+              boundsBehavior: Flickable.StopAtBounds
+              model: root.stGames.length
+              ScrollBar.vertical: ScrollBar { policy: stList.contentHeight > stList.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+
+              delegate: GameRow {
+                required property int index
+                listIndex: index
+                width: stList.width - Style.space(8)
+              }
+
+              // A new order or list keeps the picked game in view.
+              readonly property string order: root.stSortShown + (root.stInstalled ? ":installed" : ":other")
+              onOrderChanged: Qt.callLater(function() { if (root.stIndex >= 0) stList.positionViewAtIndex(root.stIndex, ListView.Contain) })
+              Component.onCompleted: if (root.stIndex > 0) positionViewAtIndex(root.stIndex, ListView.Center)
+            }
+
+            Text {
+              visible: steamPage.ready && root.stGames.length === 0
+              anchors.left: stList.left
+              anchors.right: stList.right
+              anchors.top: stList.top
+              textFormat: Text.PlainText
+              text: strings.t(root.stInstalled ? "steam.noneInstalled" : "steam.allInstalled")
+              color: root.dimFg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Item {
+              id: stDetails
+              visible: steamPage.ready && !!root.stGame
+              anchors.left: stList.right
+              anchors.leftMargin: Style.space(16)
+              anchors.right: parent.right
+              anchors.top: stList.top
+              anchors.bottom: stList.bottom
+              readonly property var game: root.stGame || ({ id: "", name: "", installed: false, size: 0, drive: -1, lastPlayed: 0, playtime: 0, cover: "" })
+
+              Cover {
+                id: stCover
+                anchors.left: parent.left
+                anchors.top: parent.top
+                width: Style.space(150)
+                height: Math.round(width * 1.5)
+                path: stDetails.game.cover
+              }
+
+              Column {
+                anchors.left: stCover.right
+                anchors.leftMargin: Style.space(14)
+                anchors.right: parent.right
+                anchors.top: parent.top
+                spacing: Style.space(8)
+
+                Text {
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  text: stDetails.game.name
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.title
+                  font.bold: true
+                  wrapMode: Text.WordWrap
+                  maximumLineCount: 3
+                  elide: Text.ElideRight
+                }
+
+                Text {
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  text: root.playedLine(stDetails.game)
+                  color: root.dimFg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+
+                Text {
+                  width: parent.width
+                  visible: stDetails.game.installed
+                  textFormat: Text.PlainText
+                  text: root.sizeLine(stDetails.game)
+                  color: root.dimFg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
                 }
               }
 
-              // Indexed, so a new reading updates the rows in place.
-              Repeater {
-                model: root.stGames.length
+              Row {
+                id: stButtons
+                anchors.left: parent.left
+                anchors.top: stCover.bottom
+                anchors.topMargin: Style.space(14)
+                spacing: Style.spacing.sm
 
-                delegate: GameRow {
-                  required property int index
-                  listIndex: index
+                // By count, so a new reading doesn't rebuild the buttons.
+                Repeater {
+                  model: root.stActions.length
+
+                  Button {
+                    required property int index
+                    readonly property string action: root.stActions[index] || ""
+                    text: strings.t("steam.action." + action)
+                    iconText: action === "run" ? "" : action === "install" ? "" : ""
+                    selected: index === 0
+                    bordered: true
+                    foreground: root.fg
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.caption
+                    hasCursor: root.cursorOn("st-actions", index)
+                    onClicked: root.steamAction(action)
+                    onHovered: function(h) { if (h) root.point("st-actions", index) }
+                  }
                 }
               }
 
               Text {
-                visible: root.stGames.length === 0
-                width: parent.width
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: stButtons.bottom
+                anchors.topMargin: Style.space(8)
                 textFormat: Text.PlainText
-                text: strings.t(root.stInstalled ? "steam.noneInstalled" : "steam.allInstalled")
+                text: strings.t(stDetails.game.installed ? "steam.uninstallHint" : "steam.installHint")
                 color: root.dimFg
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -1334,119 +1473,31 @@ Panel {
               }
             }
 
-            // One game: time played, and what can be done with it.
+            // Every disk with a Steam library, side by side.
             Column {
-              id: stDetails
-              visible: root.stPhase === "ready" && !!root.stGame
-              width: parent.width
-              spacing: Style.space(10)
-              readonly property var game: root.stGame || ({ id: "", name: "", installed: false, size: 0, drive: -1, playtime: 0 })
+              id: stDriveBox
+              visible: steamPage.ready
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              spacing: Style.space(8)
 
-              Button {
-                id: stBack
-                text: strings.t("steam.back")
-                iconText: Commons.I18n.rightToLeft ? "\uf054" : "\uf053"
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                hasCursor: root.cursorOn("st-back")
-                onClicked: root.closeGame()
-                onHovered: function(h) { if (h) root.point("st-back", 0) }
-              }
-
-              Text {
-                width: parent.width
-                textFormat: Text.PlainText
-                text: stDetails.game.name
-                color: root.fg
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.title
-                font.bold: true
-                wrapMode: Text.WordWrap
-              }
-
-              LabeledRow {
-                width: parent.width
-                label: strings.t("steam.played")
-
-                Text {
-                  width: parent.width
-                  textFormat: Text.PlainText
-                  text: root.playedText(stDetails.game.playtime)
-                  color: root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                  elide: Text.ElideRight
-                }
-              }
-
-              LabeledRow {
-                width: parent.width
-                visible: stDetails.game.installed
-                label: strings.t("steam.size")
-
-                Text {
-                  width: parent.width
-                  textFormat: Text.PlainText
-                  text: strings.t("steam.sizeOn").arg(root.bytes(stDetails.game.size)).arg(root.driveLabel(stDetails.game))
-                  color: root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                  elide: Text.ElideRight
-                }
-              }
+              PanelSeparator { foreground: root.fg }
 
               Row {
-                spacing: Style.spacing.sm
-
-                Button {
-                  visible: stDetails.game.installed
-                  text: strings.t("steam.launch")
-                  iconText: "\uf04b"
-                  bordered: true
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.caption
-                  hasCursor: root.cursorOn("st-actions", 0)
-                  onClicked: root.steamAction("run")
-                  onHovered: function(h) { if (h) root.point("st-actions", 0) }
-                }
-
-                Button {
-                  visible: stDetails.game.installed
-                  text: strings.t("steam.uninstall")
-                  iconText: "\uf1f8"
-                  bordered: true
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.caption
-                  hasCursor: root.cursorOn("st-actions", 1)
-                  onClicked: root.steamAction("uninstall")
-                  onHovered: function(h) { if (h) root.point("st-actions", 1) }
-                }
-
-                Button {
-                  visible: !stDetails.game.installed
-                  text: strings.t("steam.install")
-                  iconText: "\uf019"
-                  bordered: true
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.caption
-                  hasCursor: root.cursorOn("st-actions", 0)
-                  onClicked: root.steamAction("install")
-                  onHovered: function(h) { if (h) root.point("st-actions", 0) }
-                }
-              }
-
-              Text {
+                id: stDriveRow
                 width: parent.width
-                textFormat: Text.PlainText
-                text: strings.t(stDetails.game.installed ? "steam.uninstallHint" : "steam.installHint")
-                color: root.dimFg
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                wrapMode: Text.WordWrap
+                spacing: Style.space(16)
+
+                Repeater {
+                  model: root.stDrives.length
+
+                  delegate: DriveCell {
+                    required property int index
+                    drive: root.stDrives[index] || null
+                    width: (stDriveRow.width - stDriveRow.spacing * (root.stDrives.length - 1)) / Math.max(1, root.stDrives.length)
+                  }
+                }
               }
             }
           }
@@ -1629,55 +1680,31 @@ Panel {
   }
 
 
-  // A Steam library's disk: its free space, and a bar of how full it is.
-  component DriveRow: Column {
-    id: driveRow
+  // A Steam library's disk: its name and free space, and a bar of how full it is.
+  component DriveCell: Column {
+    id: driveCell
     property var drive: null
-    width: parent ? parent.width : 0
     spacing: Style.space(4)
 
-    Item {
+    Text {
       width: parent.width
-      implicitHeight: Math.max(driveName.implicitHeight, driveFree.implicitHeight)
-
-      Text {
-        id: driveName
-        textFormat: Text.PlainText
-        text: driveRow.drive ? driveRow.drive.label : ""
-        color: root.fg
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-        font.bold: true
-        elide: Text.ElideRight
-        anchors.left: parent.left
-        anchors.leftMargin: Style.space(6)
-        anchors.right: driveFree.left
-        anchors.rightMargin: Style.space(10)
-        anchors.verticalCenter: parent.verticalCenter
-      }
-
-      Text {
-        id: driveFree
-        textFormat: Text.PlainText
-        text: driveRow.drive ? strings.t("steam.driveFree").arg(root.bytes(driveRow.drive.free)).arg(root.bytes(driveRow.drive.total)) : ""
-        color: root.dimFg
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        anchors.right: parent.right
-        anchors.rightMargin: Style.space(6)
-        anchors.verticalCenter: parent.verticalCenter
-      }
+      textFormat: Text.PlainText
+      text: driveCell.drive ? strings.t("steam.drive").arg(driveCell.drive.label)
+        .arg(root.bytes(driveCell.drive.free)).arg(root.bytes(driveCell.drive.total)) : ""
+      color: root.dimFg
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      elide: Text.ElideRight
     }
 
     Rectangle {
-      x: Style.space(6)
-      width: parent.width - Style.space(12)
+      width: parent.width
       height: Style.space(4)
       radius: Style.cornerRadius
       color: Util.alpha(root.fg, 0.14)
 
       Rectangle {
-        width: parent.width * Library.usedShare(driveRow.drive)
+        width: parent.width * Library.usedShare(driveCell.drive)
         height: parent.height
         radius: parent.radius
         color: Util.alpha(root.fg, 0.7)
@@ -1685,64 +1712,96 @@ Panel {
     }
   }
 
-  // One game in the Steam list: its name and, when installed, its size.
-  // Click or Enter opens its details.
+  // A game's cover from Steam's own cache, or a gamepad when Steam has none.
+  component Cover: Rectangle {
+    id: coverBox
+    property string path: ""
+    property bool small: false
+    color: Util.alpha(root.fg, 0.08)
+    radius: Style.cornerRadius
+    clip: true
+
+    Text {
+      anchors.centerIn: parent
+      visible: coverImage.status !== Image.Ready
+      textFormat: Text.PlainText
+      text: ""
+      color: root.dimFg
+      font.family: root.fontFamily
+      font.pixelSize: coverBox.small ? Style.font.caption : Style.font.display
+    }
+
+    Image {
+      id: coverImage
+      anchors.fill: parent
+      visible: status === Image.Ready
+      source: Library.coverUrl(coverBox.path)
+      asynchronous: true
+      fillMode: Image.PreserveAspectCrop
+      sourceSize: coverBox.small ? Qt.size(64, 96) : Qt.size(320, 480)
+      smooth: true
+    }
+  }
+
+  // One game in the Steam list: cover, name, last played and size. The
+  // picked one is filled; click picks it.
   component GameRow: CursorSurface {
     id: gameRow
     property int listIndex: -1
-    readonly property var game: root.stGames[listIndex] || ({ id: "", name: "", installed: false, size: 0 })
+    readonly property var game: root.stGames[listIndex] || ({ id: "", name: "", installed: false, size: 0, lastPlayed: 0, cover: "" })
     readonly property string rowId: "st-game-" + listIndex
-    width: parent ? parent.width : 0
-    bordered: true
+    current: !!root.stGame && root.stGame.id === game.id
     hasCursor: root.cursorOn(rowId)
-    onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(gameRow)
+    onHasCursorChanged: if (hasCursor && !root.cursorByMouse && ListView.view) ListView.view.positionViewAtIndex(listIndex, ListView.Contain)
     foreground: root.fg
-    implicitHeight: Math.max(gameName.implicitHeight, gameSize.implicitHeight) + Style.spacing.sm * 2
+    implicitHeight: Style.space(54)
 
-    Text {
-      id: gameName
-      textFormat: Text.PlainText
-      text: gameRow.game.name
-      color: root.fg
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.body
-      font.bold: true
-      elide: Text.ElideRight
+    Cover {
+      id: rowCover
+      small: true
       anchors.left: parent.left
-      anchors.leftMargin: Style.spacing.sm + Style.space(2)
-      anchors.right: gameSize.left
-      anchors.rightMargin: Style.spacing.sm
+      anchors.leftMargin: Style.space(6)
       anchors.verticalCenter: parent.verticalCenter
+      height: parent.height - Style.space(10)
+      width: Math.round(height / 1.5)
+      path: gameRow.game.cover
     }
 
-    Text {
-      id: gameSize
-      textFormat: Text.PlainText
-      text: gameRow.game.installed ? root.bytes(gameRow.game.size) : ""
-      color: root.dimFg
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      anchors.right: gameChevron.left
+    Column {
+      anchors.left: rowCover.right
+      anchors.leftMargin: Style.space(10)
+      anchors.right: parent.right
       anchors.rightMargin: Style.space(8)
       anchors.verticalCenter: parent.verticalCenter
-    }
+      spacing: Style.space(2)
 
-    Text {
-      id: gameChevron
-      textFormat: Text.PlainText
-      text: Commons.I18n.rightToLeft ? "\uf053" : "\uf054"
-      color: root.dimFg
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      anchors.right: parent.right
-      anchors.rightMargin: Style.spacing.sm + Style.space(2)
-      anchors.verticalCenter: parent.verticalCenter
+      Text {
+        width: parent.width
+        textFormat: Text.PlainText
+        text: gameRow.game.name
+        color: root.fg
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        font.bold: true
+        elide: Text.ElideRight
+      }
+
+      Text {
+        width: parent.width
+        visible: text !== ""
+        textFormat: Text.PlainText
+        text: root.rowCaption(gameRow.game)
+        color: root.dimFg
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+      }
     }
 
     MouseArea {
       anchors.fill: parent
       cursorShape: Qt.PointingHandCursor
-      onClicked: root.openGame(gameRow.listIndex)
+      onClicked: root.selectGame(gameRow.listIndex)
     }
 
     HoverHandler {
