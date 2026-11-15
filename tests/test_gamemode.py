@@ -174,6 +174,23 @@ class GameModeTest(unittest.TestCase):
         self.assertEqual(found["chrome"]["mb"], 1000)
         self.assertEqual(found["chrome"]["pids"], [20])
 
+    def test_browser_with_the_claude_extension_bridge_is_offered(self):
+        gm = self.gm
+        ps = [
+            proc(gm, 10, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"]),
+            # Brave with Claude in Chrome's native host under it: no session there.
+            proc(gm, 20, 10, "brave", ["/opt/brave-bin/brave", "--ozone-platform=wayland"], mb=400),
+            proc(gm, 21, 20, "claude", ["/home/u/.local/bin/claude", "--chrome-native-host"], mb=10),
+            # The same flag as a later argument of a real session still counts as a session.
+            proc(gm, 30, 10, "code", ["/usr/bin/code"], mb=400),
+            proc(gm, 31, 30, "claude", ["claude", "--resume", "x"], mb=300),
+        ]
+        found = gm.apps({p.pid: p for p in ps}, manager=10, own=OWN)
+        self.assertEqual(sorted(found), ["brave"])
+        self.assertEqual(found["brave"]["mb"], 410)
+        self.assertTrue(gm.selected("app:brave", {}))
+        self.assertEqual(gm.RESTORE_FLAGS["brave"], ["--restore-last-session"])
+
     def test_sandboxed_processes_are_never_offered(self):
         """Their command line would be run on restore, outside the sandbox."""
         gm = self.gm

@@ -59,10 +59,11 @@ LABELS = {"chrome": "Chrome", "chromium": "Chromium", "brave": "Brave", "firefox
           "code": "VS Code", "obsidian": "Obsidian", "signal-desktop": "Signal", "telegram-desktop": "Telegram",
           "voxtype": "Voxtype", "nautilus": "Files", "zoom": "Zoom"}
 # Ticked the first time they show up; other apps start unticked, compose projects ticked.
-DEFAULT_ON = {"app:chrome", "app:chromium", "app:slack", "app:discord", "app:Discord", "indexer"}
+DEFAULT_ON = {"app:chrome", "app:chromium", "app:brave", "app:slack", "app:discord", "app:Discord", "indexer"}
 DEFAULT_OFF_PROJECTS = set()
 # Flags added when an app is reopened, so it comes back as it was.
-RESTORE_FLAGS = {"chrome": ["--restore-last-session"], "chromium": ["--restore-last-session"]}
+RESTORE_FLAGS = {"chrome": ["--restore-last-session"], "chromium": ["--restore-last-session"],
+                 "brave": ["--restore-last-session"]}
 # Marks app records saved since 1.0.2. Older versions trusted a parent by its process name, so
 # a sandboxed process could get its command line saved; an app record without this never runs.
 RECORD_FORMAT = 2
@@ -76,6 +77,8 @@ TERMINALS = {"kitty", "alacritty", "foot", "ghostty", "wezterm-gui", "konsole", 
 # through a file descriptor), and the app inside is the sandbox's, not this session's.
 SANDBOXES = {"bwrap", "flatpak", "flatpak-spawn", "snap", "snap-confine", "firejail"}
 HOSTS = {"claude", "codex", "opencode", "aider"}  # a tree with one of these in it is someone's live session
+# Browser-extension bridges that share a host's name but hold no session (Claude in Chrome).
+BRIDGE_ARGS = ("--chrome-native-host",)
 GAME_WORDS = ("steam", "heroic", "lutris", "wine", "proton", "gamescope", "bottles", "legendary", "umu-run")
 INTERPRETERS = {"bash", "sh", "dash", "zsh", "env"} | {f"python3.{n}" for n in range(8, 20)} | {"python3", "python", "node"}
 # Browsers started by test tools and agents (chrome-devtools-mcp, Playwright) are not the user's.
@@ -305,6 +308,12 @@ def app_name(p):
     return p.exe.removesuffix("-avx2")
 
 
+def hosts_session(p):
+    """A coding agent's live session. Its browser-extension bridge (`claude --chrome-native-host`,
+    started by the browser) holds none, so it doesn't keep the browser off the list."""
+    return p.comm in HOSTS and not any(a in BRIDGE_ARGS for a in p.argv[1:])
+
+
 def is_game(p):
     if p.exe.lower().endswith(".exe") or p.exe in ("wineserver", "wine", "wine64", "gamescope"):
         return True
@@ -351,7 +360,7 @@ def apps(procs, manager=None, own=None):
         if any(a.startswith("--type=") or a.startswith(FOREIGN_ARGS) for a in p.argv):
             continue
         members = [procs[t] for t in tree(p.pid, children) if t in procs]
-        if any(m.comm in HOSTS or m.exe in TERMINALS or is_game(m) for m in members):
+        if any(hosts_session(m) or m.exe in TERMINALS or is_game(m) for m in members):
             continue
         a = found.setdefault(name, {"pids": [], "members": [], "argv": p.argv, "mb": 0})
         a["pids"].append(p.pid)
