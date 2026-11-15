@@ -221,10 +221,10 @@ Panel {
       + (vram ? "\n" + vram + (gm.tickedVram > 0 ? " · " + strings.t("gm.frees").arg(size(gm.tickedVram)) : "") : "")
   }
 
-  // The list in sections: apps, Docker projects, then the rest (the indexer).
+  // The list in two sections: apps (the indexer counts as one) and Docker projects.
   // Each keeps indexes into gmItems so rows and the cursor stay stable.
   readonly property var gmGroups: {
-    var defs = [{ id: "apps", kinds: ["app"] }, { id: "docker", kinds: ["docker"] }, { id: "other", kinds: ["indexer"] }]
+    var defs = [{ id: "apps", kinds: ["app", "indexer"] }, { id: "docker", kinds: ["docker"] }]
     var out = []
     for (var d = 0; d < defs.length; d++) {
       var idx = []
@@ -1039,7 +1039,7 @@ Panel {
 
                 GroupTitle {
                   rowId: "gm-group-" + gmSection.group.id
-                  text: strings.t("gm.group." + (gmSection.group.id || "other"))
+                  text: strings.t("gm.group." + (gmSection.group.id || "apps"))
                   summary: root.gmGroupSummary(gmSection.group)
                   open: gmSection.open
                   checked: root.gmGroupOn(gmSection.group)

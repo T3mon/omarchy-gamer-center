@@ -105,7 +105,6 @@
   "gm.autoPlaying": "Playing %1",
   "gm.group.apps": "Apps",
   "gm.group.docker": "Docker",
-  "gm.group.other": "Other",
   "gm.groupTicked": "%1 of %2 ticked",
   "gm.groupPaused": "%1 of %2 paused"
 }
