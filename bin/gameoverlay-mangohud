@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""Keep the Game Overlay's FPS block in MangoHud.conf.
+
+  gameoverlay-mangohud status
+  gameoverlay-mangohud apply --position top-right [--graph] [--font-size 22]
+  gameoverlay-mangohud remove
+
+Only the lines between the plugin's markers are ever rewritten; the rest of
+the file stays as it was. MangoHud reads options top to bottom and the last
+one wins, so the block always goes at the end. Every command prints the
+resulting status as one JSON object.
+"""
+
+import argparse
+import json
+import os
+import shutil
+import stat
+import sys
+import tempfile
+
+BEGIN = "# >>> omarchy game-overlay >>>"
+END = "# <<< omarchy game-overlay <<<"
+POSITIONS = ("top-left", "top-center", "top-right", "middle-left", "middle-right",
+             "bottom-left", "bottom-center", "bottom-right")
+LAYERS = ("/usr/lib/mangohud/libMangoHud.so", "/usr/lib/libMangoHud.so")
+LAYERS_32 = ("/usr/lib32/mangohud/libMangoHud.so", "/usr/lib32/libMangoHud.so")
+FONT_MIN, FONT_MAX = 12, 48
+
+
+def config_path(env=None):
+    env = os.environ if env is None else env
+    base = env.get("XDG_CONFIG_HOME") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".config")
+    return os.path.join(base, "MangoHud", "MangoHud.conf")
+
+
+def split_block(text):
+    """(lines outside every managed block, lines of the last managed block or None).
+
+    A BEGIN marker without a matching END is dropped, but the lines after it
+    are kept as the user's: never delete what might not be ours.
+    """
+    outside, block, current = [], None, None
+    for line in text.splitlines():
+        marker = line.strip()
+        if current is None and marker == BEGIN:
+            current = []
+        elif current is not None and marker == END:
+            block, current = current, None
+        elif current is not None:
+            current.append(line)
+        else:
+            outside.append(line)
+    if current is not None:
+        outside.extend(current)
+    return outside, block
+
+
+def render_block(position, graph, font_size):
+    lines = [
+        BEGIN,
+        "# Written by the Game Overlay shell plugin. Lines in this block are replaced.",
+        "legacy_layout=0",
+        "fps",
+        "frametime",
+    ]
+    if graph:
+        lines.append("frame_timing")
+    lines += [
+        "fps_color_change",
+        "position=%s" % position,
+        "font_size=%d" % font_size,
+        "background_alpha=0.4",
+        "round_corners=6",
+        END,
+    ]
+    return lines
+
+
+def compose(outside, block):
+    while outside and not outside[-1].strip():
+        outside = outside[:-1]
+    lines = list(outside)
+    if block:
+        if lines:
+            lines.append("")
+        lines += block
+    return "\n".join(lines) + "\n" if lines else ""
+
+
+def parse_block(block):
+    info = {"position": None, "graph": False, "fontSize": None}
+    for line in block or []:
+        key, _, value = line.strip().partition("=")
+        if key == "position" and value in POSITIONS:
+            info["position"] = value
+        elif key == "frame_timing":
+            info["graph"] = value.strip() not in ("0",)
+        elif key == "font_size":
+            try:
+                info["fontSize"] = int(value)
+            except ValueError:
+                pass
+    return info
+
+
+def read_text(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except FileNotFoundError:
+        return ""
+
+
+def write_atomic(path, text):
+    # Follow a symlinked config (dotfile managers) instead of replacing the link.
+    target = os.path.realpath(path)
+    directory = os.path.dirname(target)
+    os.makedirs(directory, exist_ok=True)
+    try:
+        mode = stat.S_IMODE(os.stat(target).st_mode)
+    except FileNotFoundError:
+        mode = 0o644
+    fd, tmp = tempfile.mkstemp(prefix=".MangoHud.conf.", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def status(path):
+    outside, block = split_block(read_text(path))
+    info = parse_block(block)
+    return {
+        "installed": bool(shutil.which("mangohud")) or any(os.path.exists(p) for p in LAYERS),
+        "lib32": any(os.path.exists(p) for p in LAYERS_32),
+        "config": path,
+        "managed": block is not None,
+        "position": info["position"],
+        "graph": info["graph"],
+        "fontSize": info["fontSize"],
+    }
+
+
+def apply(path, position, graph, font_size):
+    outside, _ = split_block(read_text(path))
+    write_atomic(path, compose(outside, render_block(position, graph, font_size)))
+
+
+def remove(path):
+    if not os.path.exists(path):
+        return
+    outside, block = split_block(read_text(path))
+    if block is None:
+        return
+    remaining = compose(outside, None)
+    if remaining.strip():
+        write_atomic(path, remaining)
+    else:
+        os.unlink(os.path.realpath(path))
+
+
+def font_size(value):
+    try:
+        size = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("not a number: %r" % value)
+    if not FONT_MIN <= size <= FONT_MAX:
+        raise argparse.ArgumentTypeError("font size must be %d-%d" % (FONT_MIN, FONT_MAX))
+    return size
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Manage the Game Overlay block in MangoHud.conf.")
+    sub = ap.add_subparsers(dest="command", required=True)
+    sub.add_parser("status")
+    on = sub.add_parser("apply")
+    on.add_argument("--position", choices=POSITIONS, default="top-right")
+    on.add_argument("--graph", action="store_true", help="add the frame-time graph")
+    on.add_argument("--font-size", type=font_size, default=22)
+    sub.add_parser("remove")
+    args = ap.parse_args(argv)
+
+    path = config_path()
+    try:
+        if args.command == "apply":
+            apply(path, args.position, args.graph, args.font_size)
+        elif args.command == "remove":
+            remove(path)
+    except OSError as err:
+        print(json.dumps({"error": "%s: %s" % (err.__class__.__name__, err.strerror or err)}))
+        return 1
+    print(json.dumps(status(path)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

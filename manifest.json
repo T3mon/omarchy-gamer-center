@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "t3mon.gameoverlay",
+  "name": "Game Overlay",
+  "version": "1.0.0",
+  "author": "T3mon",
+  "description": "A stats overlay for games, with a MangoHud FPS switch",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Game Overlay",
+    "description": "Stats overlay for games",
+    "category": "Games",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

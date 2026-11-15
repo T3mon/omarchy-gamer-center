@@ -1,0 +1,821 @@
+#!/usr/bin/env python3
+"""Stream system stats for the Game Overlay plugin, one JSON object per line.
+
+Reads /proc and /sys only, plus NVML (or nvidia-smi) for NVIDIA GPUs that are awake.
+Needs no root. Exits when stdout closes or the parent process goes away.
+
+  gameoverlay-stats [--interval SECONDS] [--gpu auto|PCI-SLOT] [--once]
+
+--root points every /proc and /sys read at a fixture tree (used by the tests).
+"""
+
+import argparse
+import ctypes
+import json
+import math
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+VENDORS = {"0x8086": "intel", "0x10de": "nvidia", "0x1002": "amd"}
+VENDOR_LABELS = {"intel": "Intel", "nvidia": "NVIDIA", "amd": "AMD", "other": "GPU"}
+SKIP_DRIVERS = {"simpledrm", "simple-framebuffer", "vkms", "evdi", "udl", "virtio_gpu"}
+CPU_SENSORS = ("coretemp", "k10temp", "zenpower", "cpu_thermal", "soc_thermal")
+CPU_SENSOR_LABELS = ("Package id 0", "Tdie", "Tctl")
+NVSMI_FIELDS = "pci.bus_id,name,utilization.gpu,temperature.gpu,clocks.gr,memory.used,memory.total,power.draw"
+MAX_NAME = 40
+
+
+class Fs:
+    """Every read goes through here so tests can swap in a fixture root."""
+
+    def __init__(self, root="/"):
+        root = os.path.abspath(root)
+        self.root = "" if root == "/" else root
+
+    def path(self, p):
+        return self.root + p
+
+    def read(self, p):
+        # Binary read and one decode: about twice as fast as a text-mode open,
+        # which matters for the many small /proc and /sys files read per tick.
+        try:
+            with open(self.path(p), "rb", buffering=0) as f:
+                return f.read(65536).decode("utf-8", "replace")
+        except OSError:
+            return None
+
+    def read_str(self, p):
+        text = self.read(p)
+        return text.strip() if text is not None else ""
+
+    def read_int(self, p):
+        text = self.read(p)
+        if text is None:
+            return None
+        try:
+            return int(text.split()[0])
+        except (ValueError, IndexError):
+            return None
+
+    def listdir(self, p):
+        try:
+            return os.listdir(self.path(p))
+        except OSError:
+            return []
+
+    def readlink(self, p):
+        try:
+            return os.readlink(self.path(p))
+        except OSError:
+            return None
+
+    def realpath(self, p):
+        return os.path.realpath(self.path(p))
+
+
+def number(value, digits=1):
+    """Round a finite number, or return None for anything else."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(v) or math.isinf(v):
+        return None
+    return int(round(v)) if digits == 0 else round(v, digits)
+
+
+# ---------------------------------------------------------------- CPU / RAM
+
+
+def parse_proc_stat(text):
+    """Return (total, idle) jiffies from the aggregate cpu line."""
+    for line in (text or "").splitlines():
+        if line.startswith("cpu "):
+            try:
+                vals = [int(v) for v in line.split()[1:9]]
+            except ValueError:
+                return None
+            vals += [0] * (8 - len(vals))
+            return sum(vals), vals[3] + vals[4]
+    return None
+
+
+def cpu_load(prev, cur):
+    if not prev or not cur:
+        return None
+    total = cur[0] - prev[0]
+    idle = cur[1] - prev[1]
+    if total <= 0:
+        return None
+    return number(max(0.0, min(100.0, (total - idle) * 100.0 / total)))
+
+
+def find_cpu_temp(fs):
+    """Pick the package/die sensor of the CPU, best driver first."""
+    best = None
+    for hw in sorted(fs.listdir("/sys/class/hwmon")):
+        base = "/sys/class/hwmon/" + hw
+        name = fs.read_str(base + "/name")
+        if name not in CPU_SENSORS:
+            continue
+        inputs = sorted(f for f in fs.listdir(base) if f.startswith("temp") and f.endswith("_input"))
+        if not inputs:
+            continue
+        labels = {f: fs.read_str(base + "/" + f[:-6] + "_label") for f in inputs}
+        chosen = None
+        for wanted in CPU_SENSOR_LABELS:
+            chosen = next((f for f in inputs if labels[f] == wanted), None)
+            if chosen:
+                break
+        if not chosen:
+            chosen = "temp1_input" if "temp1_input" in inputs else inputs[0]
+        rank = CPU_SENSORS.index(name)
+        if best is None or rank < best[0]:
+            best = (rank, base + "/" + chosen)
+    if best:
+        return best[1]
+    for zone in sorted(fs.listdir("/sys/class/thermal")):
+        if zone.startswith("thermal_zone"):
+            kind = fs.read_str("/sys/class/thermal/%s/type" % zone)
+            if kind in ("x86_pkg_temp", "cpu-thermal", "cpu_thermal"):
+                return "/sys/class/thermal/%s/temp" % zone
+    return None
+
+
+def cpu_freq_paths(fs):
+    paths = []
+    for name in fs.listdir("/sys/devices/system/cpu"):
+        if name.startswith("cpu") and name[3:].isdigit():
+            paths.append("/sys/devices/system/cpu/%s/cpufreq/scaling_cur_freq" % name)
+    return sorted(paths)
+
+
+def cpu_mhz(fs, paths):
+    """Fastest core, which is what a game's main thread runs at."""
+    best = 0
+    for p in paths:
+        khz = fs.read_int(p)
+        if khz and khz > best:
+            best = khz
+    return int(round(best / 1000.0)) if best else None
+
+
+def memory(fs):
+    """Used and total RAM in MiB."""
+    vals = {}
+    for line in (fs.read("/proc/meminfo") or "").splitlines():
+        key, _, rest = line.partition(":")
+        if key in ("MemTotal", "MemAvailable"):
+            try:
+                vals[key] = int(rest.split()[0])
+            except (ValueError, IndexError):
+                pass
+    total = vals.get("MemTotal")
+    avail = vals.get("MemAvailable")
+    if not total or avail is None:
+        return None
+    return {"used": int(round((total - avail) / 1024.0)), "total": int(round(total / 1024.0))}
+
+
+def battery(fs):
+    """System battery draw in watts; peripheral batteries (scope=Device) are ignored."""
+    watts = 0.0
+    measured = False
+    states = []
+    for name in sorted(fs.listdir("/sys/class/power_supply")):
+        base = "/sys/class/power_supply/" + name
+        if fs.read_str(base + "/type") != "Battery":
+            continue
+        if fs.read_str(base + "/scope").lower() == "device":
+            continue
+        states.append(fs.read_str(base + "/status").lower())
+        micro_watts = fs.read_int(base + "/power_now")
+        if micro_watts is None:
+            amps = fs.read_int(base + "/current_now")
+            volts = fs.read_int(base + "/voltage_now")
+            if amps is not None and volts is not None:
+                micro_watts = abs(amps) * volts / 1e6
+        if micro_watts is not None:
+            watts += abs(micro_watts) / 1e6
+            measured = True
+    if not states:
+        return None
+    if "discharging" in states:
+        state = "discharging"
+    elif "charging" in states:
+        state = "charging"
+    else:
+        state = "ac"
+    return {"watts": number(watts) if measured else None, "state": state}
+
+
+# ---------------------------------------------------------------- GPUs
+
+
+def normalize_slot(bus_id):
+    """nvidia-smi says 00000000:01:00.0, sysfs says 0000:01:00.0."""
+    parts = (bus_id or "").strip().lower().split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        domain = int(parts[0], 16)
+    except ValueError:
+        return None
+    return "%04x:%s:%s" % (domain, parts[1], parts[2])
+
+
+def clean_name(name):
+    name = "".join(ch for ch in str(name or "") if ch.isprintable()).strip()
+    return name[:MAX_NAME]
+
+
+def short_gpu_name(name, vendor):
+    if vendor == "nvidia" and name:
+        short = name
+        for junk in ("NVIDIA ", "GeForce "):
+            short = short.replace(junk, "")
+        short = short.replace(" Laptop GPU", "").strip()
+        return short[:24] or "NVIDIA"
+    return VENDOR_LABELS.get(vendor, "GPU")
+
+
+def discover_gpus(fs):
+    gpus = []
+    for card in sorted(fs.listdir("/sys/class/drm")):
+        if not (card.startswith("card") and card[4:].isdigit()):
+            continue
+        dev = "/sys/class/drm/%s/device" % card
+        driver = os.path.basename(fs.readlink(dev + "/driver") or "")
+        if not driver or driver in SKIP_DRIVERS:
+            continue
+        vendor = VENDORS.get(fs.read_str(dev + "/vendor"), "other")
+        gpus.append({
+            "card": card,
+            "dev": dev,
+            "id": os.path.basename(fs.realpath(dev)),
+            "vendor": vendor,
+            "driver": driver,
+        })
+    intel_igpu = any(g["vendor"] == "intel" and g["id"].endswith(":00:02.0") for g in gpus)
+    for g in gpus:
+        if g["vendor"] == "intel":
+            g["discrete"] = not g["id"].endswith(":00:02.0")
+        elif g["vendor"] == "amd" and len(gpus) > 1 and not intel_igpu:
+            # An APU drives the internal panel, so the firmware marks it boot VGA.
+            g["discrete"] = fs.read_int(g["dev"] + "/boot_vga") != 1
+        else:
+            g["discrete"] = g["vendor"] in ("nvidia", "amd")
+    return gpus
+
+
+def hwmon_dir(fs, dev):
+    entries = sorted(fs.listdir(dev + "/hwmon"))
+    return dev + "/hwmon/" + entries[0] if entries else None
+
+
+class DrmUsage:
+    """Busy percent per PCI slot for Intel GPUs, from DRM fdinfo.
+
+    i915 and xe report how long each client kept each engine busy. Summing the
+    clients that existed in both samples gives the GPU's load without root.
+    """
+
+    DRIVERS = ("i915", "xe")
+    WANTED = ("drm-engine-", "drm-cycles-", "drm-total-cycles-", "drm-driver", "drm-pdev", "drm-client-id")
+    # New processes are scanned at once and re-checked while young (a game
+    # opens the GPU a moment after it starts); everything else only on the
+    # occasional full rescan, which costs tens of milliseconds.
+    RECHECK_EVERY = 3
+    YOUNG_SECONDS = 30.0
+    FULL_EVERY = 30
+
+    def __init__(self, fs):
+        self.fs = fs
+        self.fds = {}
+        self.skip = {}
+        self.first_seen = {}
+        self.ticks = 0
+        self.prev = {}
+        self.prev_time = None
+
+    def _scan(self, pid):
+        base = "/proc/%s/fd" % pid
+        found = set()
+        for fd in self.fs.listdir(base):
+            target = self.fs.readlink(base + "/" + fd)
+            if target and target.startswith("/dev/dri/"):
+                found.add(fd)
+        self.skip.pop(pid, None)
+        if found:
+            self.fds[pid] = found
+        else:
+            self.fds.pop(pid, None)
+
+    def _refresh(self, now):
+        pids = [p for p in self.fs.listdir("/proc") if p.isdigit()]
+        alive = set(pids)
+        for pid in list(self.first_seen):
+            if pid not in alive:
+                del self.first_seen[pid]
+                self.fds.pop(pid, None)
+                self.skip.pop(pid, None)
+        tick = self.ticks
+        self.ticks += 1
+        full = tick % self.FULL_EVERY == 0
+        recheck = tick % self.RECHECK_EVERY == 0
+        # Processes that were already running at startup are not young.
+        born = now if tick > 0 else now - self.YOUNG_SECONDS
+        for pid in pids:
+            seen = self.first_seen.get(pid)
+            if seen is None:
+                self.first_seen[pid] = born
+                self._scan(pid)
+            elif full or (recheck and now - seen < self.YOUNG_SECONDS):
+                self._scan(pid)
+
+    @staticmethod
+    def parse(text):
+        rec = {"driver": "", "pdev": "", "client": "", "ns": {}, "cap": {}, "cycles": {}, "total": {}}
+        for line in (text or "").splitlines():
+            if not line.startswith(DrmUsage.WANTED):
+                continue
+            key, _, val = line.partition(":")
+            val = val.strip()
+            try:
+                if key == "drm-driver":
+                    rec["driver"] = val
+                elif key == "drm-pdev":
+                    rec["pdev"] = val.lower()
+                elif key == "drm-client-id":
+                    rec["client"] = val
+                elif key.startswith("drm-engine-capacity-"):
+                    rec["cap"][key[20:]] = int(val)
+                elif key.startswith("drm-engine-"):
+                    rec["ns"][key[11:]] = int(val.split()[0])
+                elif key.startswith("drm-total-cycles-"):
+                    rec["total"][key[17:]] = int(val.split()[0])
+                elif key.startswith("drm-cycles-"):
+                    rec["cycles"][key[11:]] = int(val.split()[0])
+            except (ValueError, IndexError):
+                continue
+        return rec
+
+    def sample(self, now):
+        self._refresh(now)
+        cur = {}
+        for pid, fds in list(self.fds.items()):
+            # Until the next rescan, skip fds that were another GPU's or a
+            # duplicate of a client already read: often most of them.
+            skip = self.skip.setdefault(pid, set())
+            for fd in list(fds):
+                if fd in skip:
+                    continue
+                text = self.fs.read("/proc/%s/fdinfo/%s" % (pid, fd))
+                if text is None:
+                    fds.discard(fd)
+                    continue
+                rec = self.parse(text)
+                key = (rec["pdev"], rec["client"])
+                if rec["driver"] not in self.DRIVERS or not rec["pdev"] or not rec["client"] or key in cur:
+                    skip.add(fd)
+                    continue
+                cur[key] = rec
+
+        prev, prev_time = self.prev, self.prev_time
+        self.prev, self.prev_time = cur, now
+        if prev_time is None or now <= prev_time:
+            return {}
+        wall_ns = (now - prev_time) * 1e9
+
+        busy = {}
+        for key, rec in cur.items():
+            per = busy.setdefault(key[0], {})
+            old = prev.get(key)
+            if not old:
+                continue
+            for cls, val in rec["ns"].items():
+                delta = val - old["ns"].get(cls, val)
+                if delta > 0:
+                    per[cls] = per.get(cls, 0.0) + delta / (wall_ns * max(1, rec["cap"].get(cls, 1)))
+            for cls, cycles in rec["cycles"].items():
+                total, old_cycles, old_total = rec["total"].get(cls), old["cycles"].get(cls), old["total"].get(cls)
+                if total is None or old_cycles is None or old_total is None:
+                    continue
+                d_total, d_cycles = total - old_total, cycles - old_cycles
+                if d_total > 0 and d_cycles > 0:
+                    per[cls] = per.get(cls, 0.0) + d_cycles / (d_total * max(1, rec["cap"].get(cls, 1)))
+        return {pdev: number(min(100.0, max(per.values(), default=0.0) * 100.0)) for pdev, per in busy.items()}
+
+
+def parse_nvidia_smi(text):
+    out = {}
+    for line in (text or "").splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 8:
+            continue
+        extra = len(parts) - 8
+        slot = normalize_slot(parts[0])
+        if not slot:
+            continue
+        vals = parts[2 + extra:]
+        out[slot] = {
+            "name": clean_name(",".join(parts[1:2 + extra])),
+            "load": number(vals[0]),
+            "temp": number(vals[1], 0),
+            "mhz": number(vals[2], 0),
+            "vramUsed": number(vals[3], 0),
+            "vramTotal": number(vals[4], 0),
+            "power": number(vals[5]),
+        }
+    return out
+
+
+class _NvmlUtilization(ctypes.Structure):
+    _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint), ("_spare", ctypes.c_char * 32)]
+
+
+class _NvmlMemory(ctypes.Structure):
+    _fields_ = [("total", ctypes.c_ulonglong), ("free", ctypes.c_ulonglong),
+                ("used", ctypes.c_ulonglong), ("_spare", ctypes.c_char * 32)]
+
+
+class _NvmlMemoryV2(ctypes.Structure):
+    _fields_ = [("version", ctypes.c_uint), ("total", ctypes.c_ulonglong), ("reserved", ctypes.c_ulonglong),
+                ("free", ctypes.c_ulonglong), ("used", ctypes.c_ulonglong), ("_spare", ctypes.c_char * 32)]
+
+
+# NVML_STRUCT_VERSION(Memory, 2): the real struct size (without our spare
+# bytes) in the low bits, the version in the top byte.
+NVML_MEMORY_V2 = (ctypes.sizeof(_NvmlMemoryV2) - 32) | (2 << 24)
+
+
+class _NvmlPciInfo(ctypes.Structure):
+    _fields_ = [("busIdLegacy", ctypes.c_char * 16), ("domain", ctypes.c_uint), ("bus", ctypes.c_uint),
+                ("device", ctypes.c_uint), ("pciDeviceId", ctypes.c_uint),
+                ("pciSubSystemId", ctypes.c_uint), ("busId", ctypes.c_char * 32),
+                ("_spare", ctypes.c_char * 64)]
+
+
+class Nvml:
+    """NVIDIA's management library through ctypes: a query costs about a millisecond."""
+
+    def __init__(self, lib):
+        self.lib = lib
+        self.devices = None
+        try:
+            self.memory_v2 = lib.nvmlDeviceGetMemoryInfo_v2
+        except AttributeError:
+            self.memory_v2 = None
+
+    @classmethod
+    def load(cls):
+        try:
+            lib = ctypes.CDLL("libnvidia-ml.so.1")
+            for fn in ("nvmlInit_v2", "nvmlShutdown", "nvmlDeviceGetCount_v2", "nvmlDeviceGetHandleByIndex_v2",
+                       "nvmlDeviceGetPciInfo_v3", "nvmlDeviceGetName", "nvmlDeviceGetUtilizationRates",
+                       "nvmlDeviceGetTemperature", "nvmlDeviceGetClockInfo", "nvmlDeviceGetMemoryInfo",
+                       "nvmlDeviceGetPowerUsage"):
+                getattr(lib, fn)
+        except (OSError, AttributeError):
+            return None
+        return cls(lib)
+
+    def _open(self):
+        lib = self.lib
+        if lib.nvmlInit_v2() != 0:
+            return False
+        count = ctypes.c_uint()
+        if lib.nvmlDeviceGetCount_v2(ctypes.byref(count)) != 0:
+            lib.nvmlShutdown()
+            return False
+        self.devices = {}
+        for index in range(min(count.value, 16)):
+            handle = ctypes.c_void_p()
+            pci = _NvmlPciInfo()
+            if lib.nvmlDeviceGetHandleByIndex_v2(ctypes.c_uint(index), ctypes.byref(handle)) != 0:
+                continue
+            if lib.nvmlDeviceGetPciInfo_v3(handle, ctypes.byref(pci)) != 0:
+                continue
+            slot = normalize_slot(pci.busId.decode("ascii", "replace"))
+            name = ctypes.create_string_buffer(96)
+            ok = lib.nvmlDeviceGetName(handle, name, ctypes.c_uint(96)) == 0
+            if slot:
+                self.devices[slot] = (handle, clean_name(name.value.decode("utf-8", "replace")) if ok else "")
+        return True
+
+    def close(self):
+        if self.devices is not None:
+            self.lib.nvmlShutdown()
+            self.devices = None
+
+    def query(self):
+        """{slot: stats}, or None when NVML is unusable."""
+        if self.devices is None and not self._open():
+            return None
+        lib = self.lib
+        out = {}
+        for slot, (handle, name) in self.devices.items():
+            util, mem, mem2 = _NvmlUtilization(), _NvmlMemory(), _NvmlMemoryV2(version=NVML_MEMORY_V2)
+            temp, clock, milliwatts = ctypes.c_uint(), ctypes.c_uint(), ctypes.c_uint()
+            rec = {"name": name, "load": None, "temp": None, "mhz": None,
+                   "vramUsed": None, "vramTotal": None, "power": None}
+            if lib.nvmlDeviceGetUtilizationRates(handle, ctypes.byref(util)) == 0:
+                rec["load"] = number(util.gpu)
+            if lib.nvmlDeviceGetTemperature(handle, 0, ctypes.byref(temp)) == 0:
+                rec["temp"] = int(temp.value)
+            if lib.nvmlDeviceGetClockInfo(handle, 0, ctypes.byref(clock)) == 0:
+                rec["mhz"] = int(clock.value)
+            # v2 keeps driver-reserved memory out of "used", as nvidia-smi does.
+            if self.memory_v2 is not None and self.memory_v2(handle, ctypes.byref(mem2)) == 0:
+                rec["vramUsed"], rec["vramTotal"] = int(mem2.used // 1048576), int(mem2.total // 1048576)
+            elif lib.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(mem)) == 0:
+                rec["vramUsed"], rec["vramTotal"] = int(mem.used // 1048576), int(mem.total // 1048576)
+            if lib.nvmlDeviceGetPowerUsage(handle, ctypes.byref(milliwatts)) == 0:
+                rec["power"] = number(milliwatts.value / 1000.0)
+            out[slot] = rec
+        return out
+
+
+class NvidiaSource:
+    """NVIDIA stats from NVML, or nvidia-smi without it.
+
+    Never touches a GPU that runtime PM put to sleep, and lets an idle one with
+    runtime PM enabled go to sleep: after a few idle polls it drops its handle
+    and only checks back every IDLE_PERIOD seconds.
+    """
+
+    SMI_PERIOD = 1.0
+    IDLE_PERIOD = 10.0
+    IDLE_POLLS = 3
+
+    def __init__(self, smi=None, use_nvml=True):
+        self.smi = smi
+        self.use_nvml = use_nvml
+        self.nvml = None
+        self.cache = {}
+        self.next_poll = 0.0
+        self.idle_polls = 0
+
+    def _release(self):
+        if self.nvml is not None:
+            self.nvml.close()
+
+    def _query(self):
+        if self.use_nvml and self.nvml is None:
+            self.nvml = Nvml.load()
+            self.use_nvml = self.nvml is not None
+        if self.nvml is not None:
+            data = self.nvml.query()
+            if data is not None:
+                return data
+            self.nvml, self.use_nvml = None, False
+        if not self.smi:
+            return {}
+        try:
+            done = subprocess.run(
+                [self.smi, "--query-gpu=" + NVSMI_FIELDS, "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=3)
+        except (OSError, subprocess.SubprocessError):
+            return {}
+        return parse_nvidia_smi(done.stdout) if done.returncode == 0 else {}
+
+    def poll(self, awake, now):
+        if not awake:
+            self._release()
+            self.cache, self.next_poll, self.idle_polls = {}, 0.0, 0
+            return {}
+        if now < self.next_poll:
+            return self.cache
+        data = self._query()
+        self.cache = data
+        idle = all(not (data.get(g["id"]) or {}).get("load") for g in awake)
+        auto_pm = any(g.get("pm") == "auto" for g in awake)
+        self.idle_polls = self.idle_polls + 1 if idle and auto_pm else 0
+        if self.idle_polls >= self.IDLE_POLLS:
+            self._release()
+            self.next_poll = now + self.IDLE_PERIOD
+        else:
+            self.next_poll = now + (0.0 if self.nvml is not None else self.SMI_PERIOD - 0.05)
+        return data
+
+
+class EnergyMeter:
+    """Watts from a cumulative energy counter in microjoules."""
+
+    def __init__(self):
+        self.prev = {}
+
+    def watts(self, key, micro_joules, now):
+        if micro_joules is None:
+            self.prev.pop(key, None)
+            return None
+        old = self.prev.get(key)
+        self.prev[key] = (micro_joules, now)
+        if not old or now <= old[1] or micro_joules < old[0]:
+            return None
+        return number((micro_joules - old[0]) / 1e6 / (now - old[1]))
+
+
+class PrimaryPicker:
+    """Which GPU the overlay shows: the busy one, without flapping between two."""
+
+    def __init__(self, margin=10.0, hold=3):
+        self.margin = margin
+        self.hold = hold
+        self.current = None
+        self.challenger = None
+        self.count = 0
+
+    def initial(self, gpus):
+        """Busiest awake GPU, but a discrete one wins a near tie."""
+        load = lambda g: g.get("load") or 0.0
+        awake = [g for g in gpus if not g.get("asleep")] or gpus
+        best = max(awake, key=load)
+        for g in awake:
+            if g.get("discrete") and load(best) - load(g) < self.margin:
+                return g["id"]
+        return best["id"]
+
+    def pick(self, gpus, pinned="auto"):
+        if not gpus:
+            self.current = None
+            return None
+        ids = [g["id"] for g in gpus]
+        if pinned and pinned != "auto" and pinned in ids:
+            self.current, self.challenger, self.count = pinned, None, 0
+            return pinned
+        asleep = {g["id"] for g in gpus if g.get("asleep")}
+        if self.current not in ids or (self.current in asleep and len(asleep) < len(ids)):
+            self.current, self.challenger, self.count = self.initial(gpus), None, 0
+            return self.current
+        load = {g["id"]: (g.get("load") or 0.0) for g in gpus}
+        best = max(ids, key=lambda i: load[i])
+        if best != self.current and load[best] - load[self.current] >= self.margin:
+            self.count = self.count + 1 if self.challenger == best else 1
+            self.challenger = best
+            if self.count >= self.hold:
+                self.current, self.challenger, self.count = best, None, 0
+        else:
+            self.challenger, self.count = None, 0
+        return self.current
+
+
+class Collector:
+    REDISCOVER_EVERY = 30.0
+
+    def __init__(self, fs, gpu_pin="auto", nvidia=None):
+        self.fs = fs
+        self.gpu_pin = gpu_pin
+        self.prev_stat = None
+        self.temp_path = find_cpu_temp(fs)
+        self.freq_paths = cpu_freq_paths(fs)
+        self.drm = DrmUsage(fs)
+        self.nvidia = nvidia or NvidiaSource(use_nvml=False)
+        self.energy = EnergyMeter()
+        self.picker = PrimaryPicker()
+        self.gpus = []
+        self.names = {}
+        self.discovered_at = None
+
+    def cpu(self):
+        stat = parse_proc_stat(self.fs.read("/proc/stat"))
+        load = cpu_load(self.prev_stat, stat)
+        self.prev_stat = stat
+        temp = self.fs.read_int(self.temp_path) if self.temp_path else None
+        return {
+            "load": load,
+            "temp": number(temp / 1000.0, 0) if temp is not None else None,
+            "mhz": cpu_mhz(self.fs, self.freq_paths),
+        }
+
+    def gpu_stats(self, now):
+        if self.discovered_at is None or now - self.discovered_at >= self.REDISCOVER_EVERY:
+            self.gpus = discover_gpus(self.fs)
+            self.discovered_at = now
+
+        fs = self.fs
+        out = []
+        for g in self.gpus:
+            pm = fs.read_str(g["dev"] + "/power/control")
+            asleep = fs.read_str(g["dev"] + "/power/runtime_status") == "suspended"
+            out.append({
+                "id": g["id"], "vendor": g["vendor"], "driver": g["driver"], "discrete": g["discrete"],
+                "pm": pm, "asleep": asleep, "name": "", "label": "",
+                "load": None, "temp": None, "mhz": None, "vramUsed": None, "vramTotal": None, "power": None,
+            })
+
+        intel = [o for o in out if o["driver"] in DrmUsage.DRIVERS]
+        loads = self.drm.sample(now) if intel else {}
+        nv_awake = [o for o in out if o["vendor"] == "nvidia" and o["driver"] == "nvidia" and not o["asleep"]]
+        nv = self.nvidia.poll(nv_awake, now)
+
+        for o, g in zip(out, self.gpus):
+            if o["asleep"]:
+                self.energy.watts(o["id"], None, now)
+                continue
+            dev = g["dev"]
+            hw = hwmon_dir(fs, dev)
+            if o["driver"] in DrmUsage.DRIVERS:
+                o["load"] = loads.get(o["id"])
+                card = "/sys/class/drm/" + g["card"]
+                for path in (card + "/gt_act_freq_mhz", card + "/gt/gt0/rps_act_freq_mhz",
+                             dev + "/tile0/gt0/freq0/act_freq"):
+                    mhz = fs.read_int(path)
+                    if mhz is not None:
+                        o["mhz"] = mhz
+                        break
+                if hw:
+                    o["power"] = self.energy.watts(o["id"], fs.read_int(hw + "/energy1_input"), now)
+            elif o["vendor"] == "amd":
+                o["load"] = number(fs.read_int(dev + "/gpu_busy_percent"))
+                used, total = fs.read_int(dev + "/mem_info_vram_used"), fs.read_int(dev + "/mem_info_vram_total")
+                if used is not None and total:
+                    o["vramUsed"], o["vramTotal"] = int(used // 1048576), int(total // 1048576)
+                if hw:
+                    hz = fs.read_int(hw + "/freq1_input")
+                    o["mhz"] = int(round(hz / 1e6)) if hz else None
+                    uw = fs.read_int(hw + "/power1_average")
+                    if uw is None:
+                        uw = fs.read_int(hw + "/power1_input")
+                    o["power"] = number(uw / 1e6) if uw is not None else None
+            elif o["id"] in nv:
+                o.update(nv[o["id"]])
+            if hw and o["temp"] is None:
+                milli = fs.read_int(hw + "/temp1_input")
+                o["temp"] = number(milli / 1000.0, 0) if milli is not None else None
+
+        for o in out:
+            # Keep the name nvidia-smi gave while the GPU was awake.
+            if o["name"]:
+                self.names[o["id"]] = o["name"]
+            o["name"] = self.names.get(o["id"]) or {
+                "intel": "Intel Arc" if o["discrete"] else "Intel Graphics",
+                "amd": "AMD Radeon", "nvidia": "NVIDIA"}.get(o["vendor"], "GPU")
+            o["label"] = short_gpu_name(o["name"], o["vendor"])
+            del o["pm"]
+        return out
+
+    def sample(self, now):
+        gpus = self.gpu_stats(now)
+        return {
+            "cpu": self.cpu(),
+            "ram": memory(self.fs),
+            "gpus": gpus,
+            "primary": self.picker.pick(gpus, self.gpu_pin),
+            "battery": battery(self.fs),
+        }
+
+
+def silence_stdout():
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+    except OSError:
+        pass
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Stream system stats as JSON lines.")
+    ap.add_argument("--interval", type=float, default=1.0, help="seconds between lines (0.25-10)")
+    ap.add_argument("--gpu", default="auto", help="'auto' or a PCI slot such as 0000:01:00.0")
+    ap.add_argument("--once", action="store_true", help="print one line and exit")
+    ap.add_argument("--root", default="/", help=argparse.SUPPRESS)
+    ap.add_argument("--no-nvidia", action="store_true", help="skip NVIDIA GPUs")
+    ap.add_argument("--no-nvml", action="store_true", help="use nvidia-smi instead of NVML")
+    args = ap.parse_args(argv)
+
+    interval = args.interval if math.isfinite(args.interval) else 1.0
+    interval = min(10.0, max(0.25, interval))
+    nvidia = NvidiaSource(use_nvml=False)
+    if not args.no_nvidia:
+        nvidia = NvidiaSource(smi=shutil.which("nvidia-smi"), use_nvml=not args.no_nvml)
+    collector = Collector(Fs(args.root), gpu_pin=args.gpu.strip().lower() or "auto", nvidia=nvidia)
+    parent = os.getppid()
+
+    collector.sample(time.monotonic())
+    next_tick = time.monotonic() + min(interval, 0.5)
+    try:
+        while True:
+            delay = next_tick - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            now = time.monotonic()
+            line = json.dumps(collector.sample(now), separators=(",", ":"))
+            try:
+                sys.stdout.write(line + "\n")
+                sys.stdout.flush()
+            except BrokenPipeError:
+                silence_stdout()
+                return 0
+            if args.once or os.getppid() != parent:
+                return 0
+            next_tick = max(next_tick + interval, now + interval * 0.5)
+    except KeyboardInterrupt:
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
