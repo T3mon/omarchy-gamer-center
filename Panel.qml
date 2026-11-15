@@ -29,7 +29,7 @@ Panel {
   readonly property color fg: bar ? bar.foreground : Commons.Color.foreground
   readonly property color dimFg: Qt.darker(fg, 1.4)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property int labelWidth: Style.space(72)
+  readonly property int labelWidth: Style.space(64)
 
   // serviceFor() is a plain lookup, not a binding: ask again whenever the
   // answer could have changed, and keep asking until the service is up.
@@ -124,6 +124,26 @@ Panel {
     return strings.t("status.on").arg(names.join(", "))
   }
 
+  // Look and Behavior start folded; the choice lasts until the shell restarts.
+  property bool lookOpen: false
+  property bool behaviorOpen: false
+
+  function toggleFold(id) {
+    if (id === "fold-look") lookOpen = !lookOpen
+    else if (id === "fold-behavior") behaviorOpen = !behaviorOpen
+  }
+
+  readonly property string lookSummary: {
+    var layout = root.layoutOptions.filter(function(o) { return o.value === config.layout })
+    return (layout.length ? layout[0].label : "") + " · " + Commons.I18n.formatNumber(Math.round(config.scale * 100)) + "%"
+  }
+
+  readonly property string behaviorSummary: {
+    var parts = [strings.t("interval.seconds").arg(Commons.I18n.formatNumber(config.interval, config.interval < 1 ? 1 : 0))]
+    if (config.fullscreenOnly) parts.unshift(strings.t("fold.fullscreen"))
+    return parts.join(" · ")
+  }
+
   function positionAt(rowId, col) {
     var row = positionGrid[rowId === "pos-top" ? 0 : 1]
     return row[Math.max(0, Math.min(row.length - 1, col))]
@@ -160,13 +180,19 @@ Panel {
     var list = [{ id: "enabled", count: 1 }, { id: "pos-top", count: 3 }, { id: "pos-bottom", count: 3 }]
     for (var i = 0; i < Metrics.GROUPS.length; i++)
       list.push({ id: "metrics-" + Metrics.GROUPS[i].id, count: Metrics.GROUPS[i].metrics.length })
-    list.push({ id: "layout", count: Metrics.LAYOUTS.length })
-    list.push({ id: "scale", count: 1, slider: true })
-    list.push({ id: "opacity", count: 1, slider: true })
-    list.push({ id: "fullscreen", count: 1 })
-    list.push({ id: "interval", count: Metrics.INTERVALS.length })
-    if (gpuChoices.length > 2) list.push({ id: "gpu", count: gpuChoices.length })
-    if (screenChoices.length > 2) list.push({ id: "screen", count: screenChoices.length })
+    list.push({ id: "fold-look", count: 1 })
+    if (lookOpen) {
+      list.push({ id: "layout", count: Metrics.LAYOUTS.length })
+      list.push({ id: "scale", count: 1, slider: true })
+      list.push({ id: "opacity", count: 1, slider: true })
+    }
+    list.push({ id: "fold-behavior", count: 1 })
+    if (behaviorOpen) {
+      list.push({ id: "fullscreen", count: 1 })
+      list.push({ id: "interval", count: Metrics.INTERVALS.length })
+      if (gpuChoices.length > 2) list.push({ id: "gpu", count: gpuChoices.length })
+      if (screenChoices.length > 2) list.push({ id: "screen", count: screenChoices.length })
+    }
     if (!mango.installed) list.push({ id: "install", count: 1 })
     list.push({ id: "fps", count: 1 })
     if (mango.managed) list.push({ id: "graph", count: 1 })
@@ -217,6 +243,7 @@ Panel {
     var id = cursorRow
     var col = cursorCol
     if (id === "enabled") service.setEnabled(!config.enabled)
+    else if (id.indexOf("fold-") === 0) toggleFold(id)
     else if (id === "pos-top" || id === "pos-bottom") setValue("position", positionAt(id, col))
     else if (id.indexOf("metrics-") === 0) {
       for (var i = 0; i < Metrics.GROUPS.length; i++)
@@ -325,7 +352,7 @@ Panel {
         Column {
           id: panelColumn
           width: scrollArea.availableWidth
-          spacing: Style.space(14)
+          spacing: Style.space(10)
 
           // ---------- Hero: icon · title/status · switch ----------
           Item {
@@ -393,7 +420,7 @@ Panel {
 
           Column {
             width: parent.width
-            spacing: Style.space(8)
+            spacing: Style.space(6)
 
             SectionTitle {
               text: strings.t("section.position")
@@ -410,7 +437,7 @@ Panel {
 
           Column {
             width: parent.width
-            spacing: Style.space(8)
+            spacing: Style.space(6)
 
             SectionTitle { text: strings.t("section.stats") }
 
@@ -430,12 +457,18 @@ Panel {
 
           Column {
             width: parent.width
-            spacing: Style.space(8)
+            spacing: Style.space(6)
 
-            SectionTitle { text: strings.t("section.look") }
+            FoldTitle {
+              rowId: "fold-look"
+              text: strings.t("section.look")
+              summary: root.lookSummary
+              open: root.lookOpen
+            }
 
             LabeledRow {
               width: parent.width
+              visible: root.lookOpen
               label: strings.t("look.layout")
 
               ButtonGroup {
@@ -454,6 +487,7 @@ Panel {
 
             SliderRow {
               width: parent.width
+              visible: root.lookOpen
               rowId: "scale"
               label: strings.t("look.size")
               value: root.config.scale
@@ -464,6 +498,7 @@ Panel {
 
             SliderRow {
               width: parent.width
+              visible: root.lookOpen
               rowId: "opacity"
               label: strings.t("look.backdrop")
               value: root.config.opacity
@@ -478,13 +513,19 @@ Panel {
 
           Column {
             width: parent.width
-            spacing: Style.space(8)
+            spacing: Style.space(6)
 
-            SectionTitle { text: strings.t("section.behavior") }
+            FoldTitle {
+              rowId: "fold-behavior"
+              text: strings.t("section.behavior")
+              summary: root.behaviorSummary
+              open: root.behaviorOpen
+            }
 
             Toggle {
               id: fullscreenToggle
               width: parent.width
+              visible: root.behaviorOpen
               label: strings.t("behavior.fullscreenOnly")
               description: strings.t("behavior.fullscreenOnlyHint")
               checked: root.config.fullscreenOnly
@@ -498,6 +539,7 @@ Panel {
 
             LabeledRow {
               width: parent.width
+              visible: root.behaviorOpen
               label: strings.t("behavior.interval")
 
               ButtonGroup {
@@ -516,7 +558,7 @@ Panel {
 
             LabeledRow {
               width: parent.width
-              visible: root.gpuChoices.length > 2
+              visible: root.behaviorOpen && root.gpuChoices.length > 2
               label: strings.t("behavior.gpu")
 
               ButtonGroup {
@@ -535,7 +577,7 @@ Panel {
 
             LabeledRow {
               width: parent.width
-              visible: root.screenChoices.length > 2
+              visible: root.behaviorOpen && root.screenChoices.length > 2
               label: strings.t("behavior.screen")
 
               ButtonGroup {
@@ -558,7 +600,7 @@ Panel {
 
           Column {
             width: parent.width
-            spacing: Style.space(8)
+            spacing: Style.space(6)
 
             SectionTitle { text: strings.t("section.fps") }
 
@@ -702,6 +744,69 @@ Panel {
       anchors.right: parent.right
       anchors.rightMargin: Style.space(6)
       anchors.verticalCenter: parent.verticalCenter
+    }
+  }
+
+  // A section header that folds its section: click or Enter flips it. Folded,
+  // it shows a one-line summary of the current values.
+  component FoldTitle: CursorSurface {
+    id: fold
+    property string rowId: ""
+    property string text: ""
+    property string summary: ""
+    property bool open: false
+    width: parent ? parent.width : 0
+    implicitHeight: Math.max(foldHeader.implicitHeight, foldChevron.implicitHeight) + Style.spacing.xs * 2
+    hasCursor: root.cursorOn(rowId)
+    onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(fold)
+    foreground: root.fg
+
+    PanelSectionHeader {
+      id: foldHeader
+      text: fold.text
+      foreground: root.fg
+      fontFamily: root.fontFamily
+      anchors.left: parent.left
+      anchors.leftMargin: Style.space(6)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    Text {
+      visible: !fold.open
+      textFormat: Text.PlainText
+      text: fold.summary
+      color: root.dimFg
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      elide: Text.ElideRight
+      horizontalAlignment: Text.AlignRight
+      anchors.left: foldHeader.right
+      anchors.leftMargin: Style.space(10)
+      anchors.right: foldChevron.left
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    Text {
+      id: foldChevron
+      textFormat: Text.PlainText
+      text: fold.open ? "\uf077" : "\uf078"
+      color: root.dimFg
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(6)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.toggleFold(fold.rowId)
+    }
+
+    HoverHandler {
+      onHoveredChanged: if (hovered) root.point(fold.rowId, 0)
     }
   }
 

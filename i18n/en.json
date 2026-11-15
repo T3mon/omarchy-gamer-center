@@ -15,6 +15,7 @@
   "section.behavior": "Behavior",
   "section.fps": "FPS · MangoHud",
   "position.hint": "Click where it should sit",
+  "fold.fullscreen": "Fullscreen only",
 
   "group.cpu": "CPU",
   "group.gpu": "GPU",
