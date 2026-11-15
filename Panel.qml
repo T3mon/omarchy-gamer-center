@@ -31,6 +31,13 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property int labelWidth: Style.space(64)
 
+  // Which page shows: "stats" (the overlay) or "gamemode". Kept until the
+  // shell restarts.
+  property string page: "stats"
+  readonly property var gm: service ? service.gameMode : null
+  readonly property bool gameOn: !!gm && gm.gameOn
+  readonly property var gmItems: gm ? gm.items : []
+
   // serviceFor() is a plain lookup, not a binding: ask again whenever the
   // answer could have changed, and keep asking until the service is up.
   function resolveService() {
@@ -43,17 +50,45 @@ Panel {
   // While the panel is open the service streams stats even with the HUD off,
   // so the preview below is live.
   function syncPreview() {
-    var want = opened && service ? service : null
-    if (want === heldService) return
-    if (heldService) heldService.releasePreview()
-    heldService = want
-    if (want) want.retainPreview()
+    var want = opened && page === "stats" && service ? service : null
+    if (want !== heldService) {
+      if (heldService) heldService.releasePreview()
+      heldService = want
+      if (want) want.retainPreview()
+    }
+    var watch = opened && page === "gamemode" && gm ? gm : null
+    if (watch !== watchedGameMode) {
+      if (watchedGameMode) watchedGameMode.watchers = Math.max(0, watchedGameMode.watchers - 1)
+      watchedGameMode = watch
+      if (watch) { watch.watchers++; watch.refresh() }
+    }
+  }
+
+  property var watchedGameMode: null
+
+  function setPage(name) {
+    if (name !== "stats" && name !== "gamemode") return
+    page = name
+  }
+
+  onPageChanged: syncPreview()
+
+  // Middle click and the Pause button: with nothing ticked, show what could be.
+  function toggleGameMode() {
+    if (!gm) return
+    if (!gm.toggleGameMode() && !gm.gameOn && !gm.working) {
+      setPage("gamemode")
+      if (!opened) open()
+    }
   }
 
   onBarChanged: resolveService()
   onServiceChanged: { syncPreview(); refreshGpuChoices() }
   Component.onCompleted: resolveService()
-  Component.onDestruction: if (heldService) heldService.releasePreview()
+  Component.onDestruction: {
+    if (heldService) heldService.releasePreview()
+    if (watchedGameMode) watchedGameMode.watchers = Math.max(0, watchedGameMode.watchers - 1)
+  }
 
   Timer {
     interval: 1000
@@ -67,7 +102,7 @@ Panel {
     syncPreview()
     if (!opened) return
     if (service) service.refreshMango()
-    cursorRow = "enabled"
+    cursorRow = page === "stats" ? "enabled" : "gm-power"
     cursorCol = 0
     cursorActive = false
     cursorByMouse = false
@@ -159,6 +194,54 @@ Panel {
     return parts.join(" · ")
   }
 
+  // ------------------------------------------------------------ game mode text
+
+  function gb(mb) { return strings.t("gm.gb").arg(Commons.I18n.formatNumber(mb / 1024, 1)) }
+  function size(mb) { return mb < 1024 ? strings.t("gm.mb").arg(Commons.I18n.formatNumber(mb, 0)) : gb(mb) }
+
+  readonly property string gmFreeLine: gm && gm.mem ? strings.t("gm.ramFree").arg(gb(gm.mem.availableMB)).arg(gb(gm.mem.totalMB)) : ""
+  readonly property string gmVramLine: gm && gm.gpu
+    ? strings.t("gm.vramFree").arg(size(Math.max(0, gm.gpu.totalMB - gm.gpu.usedMB))).arg(size(gm.gpu.totalMB)) : ""
+
+  // One line for RAM, one for VRAM (when there's a GPU to read).
+  readonly property string gmStateLine: {
+    if (!gm || !gm.status) return strings.t("gm.reading")
+    if (gm.pending === "on") return strings.t("gm.freeing")
+    if (gm.pending === "off") return strings.t("gm.restoring")
+    var ram = gmFreeLine, vram = gmVramLine
+    if (gm.gameOn) {
+      if (gm.status.freedMB) ram += " · " + strings.t("gm.freed").arg(gb(gm.status.freedMB))
+      if (vram && gm.status.freedVramMB) vram += " · " + strings.t("gm.freed").arg(size(gm.status.freedVramMB))
+      var since = gm.status.since ? new Date(gm.status.since * 1000) : null
+      return (since ? strings.t("gm.since").arg(since.toLocaleTimeString(Qt.locale(Commons.I18n.formatLocale), "HH:mm")) + "\n" : "")
+        + ram + (vram ? "\n" + vram : "")
+    }
+    if (gm.tickedCount === 0) return ram + (vram ? "\n" + vram : "") + "\n" + strings.t("gm.tickHint")
+    return ram + (gm.tickedMB > 0 ? " · " + strings.t("gm.frees").arg(gb(gm.tickedMB)) : "")
+      + (vram ? "\n" + vram + (gm.tickedVram > 0 ? " · " + strings.t("gm.frees").arg(size(gm.tickedVram)) : "") : "")
+  }
+
+  function gmRowDescription(item) {
+    var p = gm ? gm.itemPending[item.key] : undefined
+    if (p === "pause") return strings.t(item.kind === "app" ? "gm.closing" : "gm.stopping")
+    if (p === "resume") return strings.t(item.kind === "app" ? "gm.reopening" : "gm.starting")
+    return item.detail
+  }
+
+  readonly property string barTooltip: {
+    var lines = [hudOn ? strings.t("bar.tooltipOn") : strings.t("bar.tooltip")]
+    if (gm && gm.status) {
+      if (gm.working) lines.push(strings.t(gm.gameOn ? "gm.barWorking" : "gm.restoring"))
+      else {
+        lines.push(strings.t(gm.gameOn ? "gm.barOn" : "gm.barOff"))
+        if (gmFreeLine) lines.push(gmFreeLine)
+        if (gmVramLine) lines.push(gmVramLine)
+      }
+      lines.push(strings.t(gm.gameOn ? "gm.middleOff" : "gm.middleOn"))
+    }
+    return lines.join("\n")
+  }
+
   function positionAt(rowId, col) {
     var row = positionGrid[rowId === "pos-top" ? 0 : 1]
     return row[Math.max(0, Math.min(row.length - 1, col))]
@@ -192,7 +275,13 @@ Panel {
   property bool cursorActive: false
 
   readonly property var navRows: {
-    var list = [{ id: "enabled", count: 1 }, { id: "fold-position", count: 1 }]
+    var list = [{ id: "page", count: 2 }]
+    if (page === "gamemode") {
+      list.push({ id: "gm-power", count: 1 })
+      for (var g = 0; g < gmItems.length; g++) list.push({ id: "gm-item-" + g, count: 1 })
+      return list
+    }
+    list.push({ id: "enabled", count: 1 }, { id: "fold-position", count: 1 })
     if (positionOpen) list.push({ id: "pos-top", count: 3 }, { id: "pos-bottom", count: 3 })
     list.push({ id: "fold-stats", count: 1 })
     if (statsOpen) {
@@ -269,7 +358,10 @@ Panel {
     if (!service) return
     var id = cursorRow
     var col = cursorCol
-    if (id === "enabled") service.setEnabled(!config.enabled)
+    if (id === "page") setPage(col === 0 ? "stats" : "gamemode")
+    else if (id === "gm-power") toggleGameMode()
+    else if (id.indexOf("gm-item-") === 0) { if (gm) gm.clickItem(gmItems[Number(id.slice(8))]) }
+    else if (id === "enabled") service.setEnabled(!config.enabled)
     else if (id.indexOf("fold-") === 0) toggleFold(id)
     else if (id === "pos-top" || id === "pos-bottom") setValue("position", positionAt(id, col))
     else if (id.indexOf("metrics-") === 0) {
@@ -292,7 +384,7 @@ Panel {
   function clampCursor() {
     var r = rowIndex(cursorRow)
     if (r < 0) {
-      cursorRow = rowIndex("fps") >= 0 ? "fps" : navRows[0].id
+      cursorRow = rowIndex("fps") >= 0 ? "fps" : navRows[navRows.length > 1 ? 1 : 0].id
       cursorCol = 0
       return
     }
@@ -326,13 +418,15 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: ""
-    active: root.hudOn
+    active: root.hudOn || root.gameOn
     activeColor: Commons.Color.accent
-    tooltipText: root.hudOn ? strings.t("bar.tooltipOn") : strings.t("bar.tooltip")
-    // Left opens the panel; right flips the HUD without opening anything.
+    tooltipText: root.barTooltip
+    // Left opens the panel; right flips the HUD; middle flips game mode.
     onPressed: function(b) {
       if (b === Qt.RightButton) {
         if (root.service) root.service.setEnabled(!root.config.enabled)
+      } else if (b === Qt.MiddleButton) {
+        root.toggleGameMode()
       } else if (b === Qt.LeftButton) {
         root.toggle()
       }
@@ -382,376 +476,524 @@ Panel {
           width: scrollArea.availableWidth
           spacing: Style.space(10)
 
-          // ---------- Hero: icon · title/status · switch ----------
-          Item {
-            width: parent.width
-            implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, heroSwitch.implicitHeight)
-
-            Text {
-              id: heroIcon
-              textFormat: Text.PlainText
-              text: ""
-              color: root.fg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.display
-              anchors.left: parent.left
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Column {
-              id: heroLabels
-              anchors.left: heroIcon.right
-              anchors.leftMargin: Style.space(14)
-              anchors.right: heroSwitch.left
-              anchors.rightMargin: Style.space(10)
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(2)
-
-              Text {
-                textFormat: Text.PlainText
-                text: strings.t("panel.title")
-                color: root.fg
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.title
-                font.bold: true
-                elide: Text.ElideRight
-                width: parent.width
-              }
-
-              Text {
-                textFormat: Text.PlainText
-                text: root.statusText
-                color: root.service && root.service.statsFailed && root.service.streaming ? Commons.Color.urgent : root.dimFg
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                font.bold: true
-                elide: Text.ElideRight
-                width: parent.width
-              }
-            }
-
-            ToggleSwitch {
-              id: heroSwitch
-              anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
-              checked: root.config.enabled
-              busy: !root.service || !root.service.configReady
-              hasCursor: root.cursorOn("enabled")
-              foreground: root.fg
-              onToggled: if (root.service) root.service.setEnabled(!root.config.enabled)
-              onHovered: function(h) { if (h) root.point("enabled", 0) }
-            }
+          // ---------- Pages ----------
+          ButtonGroup {
+            id: pageTabs
+            options: [{ value: "stats", label: strings.t("page.stats") }, { value: "gamemode", label: strings.t("page.gamemode") }]
+            value: root.page
+            focusable: false
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            cursorIndex: root.cursorIndexFor("page")
+            onChanged: function(v) { root.setPage(v) }
+            onHovered: function(index, h) { if (h) root.point("page", index) }
           }
 
-          // ---------- Position ----------
-          PanelSeparator { foreground: root.fg }
-
           Column {
+            id: statsPage
+            visible: root.page === "stats"
             width: parent.width
-            spacing: Style.space(6)
+            spacing: Style.space(10)
 
-            FoldTitle {
-              rowId: "fold-position"
-              text: strings.t("section.position")
-              hint: strings.t("position.hint")
-              summary: root.positionSummary
-              open: root.positionOpen
-            }
-
-            ScreenPicker {
-              width: parent.width
-              visible: root.positionOpen
-            }
-          }
-
-          // ---------- Stats ----------
-          PanelSeparator { foreground: root.fg }
-
-          Column {
-            width: parent.width
-            spacing: Style.space(6)
-
-            FoldTitle {
-              rowId: "fold-stats"
-              text: strings.t("section.stats")
-              summary: root.statsSummary
-              open: root.statsOpen
-            }
-
-            Repeater {
-              model: Metrics.GROUPS
-
-              MetricGroupRow {
-                required property var modelData
-                visible: root.statsOpen
-                width: panelColumn.width
-                group: modelData
-              }
-            }
-          }
-
-          // ---------- Look ----------
-          PanelSeparator { foreground: root.fg }
-
-          Column {
-            width: parent.width
-            spacing: Style.space(6)
-
-            FoldTitle {
-              rowId: "fold-look"
-              text: strings.t("section.look")
-              summary: root.lookSummary
-              open: root.lookOpen
-            }
-
-            LabeledRow {
-              width: parent.width
-              visible: root.lookOpen
-              label: strings.t("look.layout")
-
-              ButtonGroup {
-                options: root.layoutOptions
-                value: root.config.layout
-                focusable: false
-                cursorIndex: root.cursorIndexFor("layout")
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                spacing: Style.spacing.xs
-                onChanged: function(v) { root.setValue("layout", v) }
-                onHovered: function(i, h) { if (h) root.point("layout", i) }
-              }
-            }
-
-            SliderRow {
-              width: parent.width
-              visible: root.lookOpen
-              rowId: "scale"
-              label: strings.t("look.size")
-              value: root.config.scale
-              minimum: Metrics.SCALE_MIN
-              maximum: Metrics.SCALE_MAX
-              onCommit: function(v) { root.setValue("scale", v) }
-            }
-
-            SliderRow {
-              width: parent.width
-              visible: root.lookOpen
-              rowId: "opacity"
-              label: strings.t("look.backdrop")
-              value: root.config.opacity
-              minimum: 0
-              maximum: 1
-              onCommit: function(v) { root.setValue("opacity", v) }
-            }
-          }
-
-          // ---------- Behavior ----------
-          PanelSeparator { foreground: root.fg }
-
-          Column {
-            width: parent.width
-            spacing: Style.space(6)
-
-            FoldTitle {
-              rowId: "fold-behavior"
-              text: strings.t("section.behavior")
-              summary: root.behaviorSummary
-              open: root.behaviorOpen
-            }
-
-            SmallToggle {
-              id: fullscreenToggle
-              width: parent.width
-              visible: root.behaviorOpen
-              label: strings.t("behavior.fullscreenOnly")
-              description: strings.t("behavior.fullscreenOnlyHint")
-              checked: root.config.fullscreenOnly
-              hasCursor: root.cursorOn("fullscreen")
-              onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(fullscreenToggle)
-              foreground: root.fg
-              fontFamily: root.fontFamily
-              onClicked: root.setValue("fullscreenOnly", !root.config.fullscreenOnly)
-              onHovered: function(h) { if (h) root.point("fullscreen", 0) }
-            }
-
-            LabeledRow {
-              width: parent.width
-              visible: root.behaviorOpen
-              label: strings.t("behavior.interval")
-
-              ButtonGroup {
-                options: root.intervalOptions
-                value: String(root.config.interval)
-                focusable: false
-                cursorIndex: root.cursorIndexFor("interval")
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                spacing: Style.spacing.xs
-                onChanged: function(v) { root.setValue("interval", Number(v)) }
-                onHovered: function(i, h) { if (h) root.point("interval", i) }
-              }
-            }
-
-            LabeledRow {
-              width: parent.width
-              visible: root.behaviorOpen && root.gpuChoices.length > 2
-              label: strings.t("behavior.gpu")
-
-              ButtonGroup {
-                options: root.gpuChoices
-                value: root.config.gpu
-                focusable: false
-                cursorIndex: root.cursorIndexFor("gpu")
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                spacing: Style.spacing.xs
-                onChanged: function(v) { root.setValue("gpu", v) }
-                onHovered: function(i, h) { if (h) root.point("gpu", i) }
-              }
-            }
-
-            LabeledRow {
-              width: parent.width
-              visible: root.behaviorOpen && root.screenChoices.length > 2
-              label: strings.t("behavior.screen")
-
-              ButtonGroup {
-                options: root.screenChoices
-                value: root.config.screen
-                focusable: false
-                cursorIndex: root.cursorIndexFor("screen")
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                spacing: Style.spacing.xs
-                onChanged: function(v) { root.setValue("screen", v) }
-                onHovered: function(i, h) { if (h) root.point("screen", i) }
-              }
-            }
-          }
-
-          // ---------- FPS through MangoHud ----------
-          PanelSeparator { foreground: root.fg }
-
-          Column {
-            width: parent.width
-            spacing: Style.space(6)
-
-            FoldTitle {
-              rowId: "fold-fps"
-              text: strings.t("section.fps")
-              summary: root.fpsSummary
-              open: root.fpsOpen
-            }
-
-            Column {
-            width: parent.width
-            spacing: Style.space(6)
-            visible: root.fpsOpen
-
+            // ---------- Hero: icon · title/status · switch ----------
             Item {
               width: parent.width
-              visible: !root.mango.installed
-              implicitHeight: Math.max(missingText.implicitHeight, installButton.implicitHeight)
+              implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, heroSwitch.implicitHeight)
 
               Text {
-                id: missingText
+                id: heroIcon
                 textFormat: Text.PlainText
-                text: strings.t("fps.missing")
+                text: ""
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.display
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Column {
+                id: heroLabels
+                anchors.left: heroIcon.right
+                anchors.leftMargin: Style.space(14)
+                anchors.right: heroSwitch.left
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(2)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: strings.t("panel.title")
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.title
+                  font.bold: true
+                  elide: Text.ElideRight
+                  width: parent.width
+                }
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: root.statusText
+                  color: root.service && root.service.statsFailed && root.service.streaming ? Commons.Color.urgent : root.dimFg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                  elide: Text.ElideRight
+                  width: parent.width
+                }
+              }
+
+              ToggleSwitch {
+                id: heroSwitch
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                checked: root.config.enabled
+                busy: !root.service || !root.service.configReady
+                hasCursor: root.cursorOn("enabled")
+                foreground: root.fg
+                onToggled: if (root.service) root.service.setEnabled(!root.config.enabled)
+                onHovered: function(h) { if (h) root.point("enabled", 0) }
+              }
+            }
+
+            // ---------- Position ----------
+            PanelSeparator { foreground: root.fg }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(6)
+
+              FoldTitle {
+                rowId: "fold-position"
+                text: strings.t("section.position")
+                hint: strings.t("position.hint")
+                summary: root.positionSummary
+                open: root.positionOpen
+              }
+
+              ScreenPicker {
+                width: parent.width
+                visible: root.positionOpen
+              }
+            }
+
+            // ---------- Stats ----------
+            PanelSeparator { foreground: root.fg }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(6)
+
+              FoldTitle {
+                rowId: "fold-stats"
+                text: strings.t("section.stats")
+                summary: root.statsSummary
+                open: root.statsOpen
+              }
+
+              Repeater {
+                model: Metrics.GROUPS
+
+                MetricGroupRow {
+                  required property var modelData
+                  visible: root.statsOpen
+                  width: panelColumn.width
+                  group: modelData
+                }
+              }
+            }
+
+            // ---------- Look ----------
+            PanelSeparator { foreground: root.fg }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(6)
+
+              FoldTitle {
+                rowId: "fold-look"
+                text: strings.t("section.look")
+                summary: root.lookSummary
+                open: root.lookOpen
+              }
+
+              LabeledRow {
+                width: parent.width
+                visible: root.lookOpen
+                label: strings.t("look.layout")
+
+                ButtonGroup {
+                  options: root.layoutOptions
+                  value: root.config.layout
+                  focusable: false
+                  cursorIndex: root.cursorIndexFor("layout")
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  spacing: Style.spacing.xs
+                  onChanged: function(v) { root.setValue("layout", v) }
+                  onHovered: function(i, h) { if (h) root.point("layout", i) }
+                }
+              }
+
+              SliderRow {
+                width: parent.width
+                visible: root.lookOpen
+                rowId: "scale"
+                label: strings.t("look.size")
+                value: root.config.scale
+                minimum: Metrics.SCALE_MIN
+                maximum: Metrics.SCALE_MAX
+                onCommit: function(v) { root.setValue("scale", v) }
+              }
+
+              SliderRow {
+                width: parent.width
+                visible: root.lookOpen
+                rowId: "opacity"
+                label: strings.t("look.backdrop")
+                value: root.config.opacity
+                minimum: 0
+                maximum: 1
+                onCommit: function(v) { root.setValue("opacity", v) }
+              }
+            }
+
+            // ---------- Behavior ----------
+            PanelSeparator { foreground: root.fg }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(6)
+
+              FoldTitle {
+                rowId: "fold-behavior"
+                text: strings.t("section.behavior")
+                summary: root.behaviorSummary
+                open: root.behaviorOpen
+              }
+
+              SmallToggle {
+                id: fullscreenToggle
+                width: parent.width
+                visible: root.behaviorOpen
+                label: strings.t("behavior.fullscreenOnly")
+                description: strings.t("behavior.fullscreenOnlyHint")
+                checked: root.config.fullscreenOnly
+                hasCursor: root.cursorOn("fullscreen")
+                onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(fullscreenToggle)
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onClicked: root.setValue("fullscreenOnly", !root.config.fullscreenOnly)
+                onHovered: function(h) { if (h) root.point("fullscreen", 0) }
+              }
+
+              LabeledRow {
+                width: parent.width
+                visible: root.behaviorOpen
+                label: strings.t("behavior.interval")
+
+                ButtonGroup {
+                  options: root.intervalOptions
+                  value: String(root.config.interval)
+                  focusable: false
+                  cursorIndex: root.cursorIndexFor("interval")
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  spacing: Style.spacing.xs
+                  onChanged: function(v) { root.setValue("interval", Number(v)) }
+                  onHovered: function(i, h) { if (h) root.point("interval", i) }
+                }
+              }
+
+              LabeledRow {
+                width: parent.width
+                visible: root.behaviorOpen && root.gpuChoices.length > 2
+                label: strings.t("behavior.gpu")
+
+                ButtonGroup {
+                  options: root.gpuChoices
+                  value: root.config.gpu
+                  focusable: false
+                  cursorIndex: root.cursorIndexFor("gpu")
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  spacing: Style.spacing.xs
+                  onChanged: function(v) { root.setValue("gpu", v) }
+                  onHovered: function(i, h) { if (h) root.point("gpu", i) }
+                }
+              }
+
+              LabeledRow {
+                width: parent.width
+                visible: root.behaviorOpen && root.screenChoices.length > 2
+                label: strings.t("behavior.screen")
+
+                ButtonGroup {
+                  options: root.screenChoices
+                  value: root.config.screen
+                  focusable: false
+                  cursorIndex: root.cursorIndexFor("screen")
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  spacing: Style.spacing.xs
+                  onChanged: function(v) { root.setValue("screen", v) }
+                  onHovered: function(i, h) { if (h) root.point("screen", i) }
+                }
+              }
+            }
+
+            // ---------- FPS through MangoHud ----------
+            PanelSeparator { foreground: root.fg }
+
+            Column {
+              width: parent.width
+              spacing: Style.space(6)
+
+              FoldTitle {
+                rowId: "fold-fps"
+                text: strings.t("section.fps")
+                summary: root.fpsSummary
+                open: root.fpsOpen
+              }
+
+              Column {
+              width: parent.width
+              spacing: Style.space(6)
+              visible: root.fpsOpen
+
+              Item {
+                width: parent.width
+                visible: !root.mango.installed
+                implicitHeight: Math.max(missingText.implicitHeight, installButton.implicitHeight)
+
+                Text {
+                  id: missingText
+                  textFormat: Text.PlainText
+                  text: strings.t("fps.missing")
+                  color: root.dimFg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                  anchors.left: parent.left
+                  anchors.right: installButton.left
+                  anchors.rightMargin: Style.space(10)
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+
+                Button {
+                  id: installButton
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: strings.t("fps.install")
+                  iconText: ""
+                  bordered: true
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  hasCursor: root.cursorOn("install")
+                  onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(installButton)
+                  onClicked: if (root.service) root.service.installMango()
+                  onHovered: function(h) { if (h) root.point("install", 0) }
+                }
+              }
+
+              SmallToggle {
+                id: fpsToggle
+                width: parent.width
+                label: strings.t("fps.show")
+                description: strings.t("fps.showHint")
+                checked: root.mango.managed
+                hasCursor: root.cursorOn("fps")
+                onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(fpsToggle)
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onClicked: if (root.service) root.service.setFps(!root.mango.managed)
+                onHovered: function(h) { if (h) root.point("fps", 0) }
+              }
+
+              SmallToggle {
+                id: graphToggle
+                width: parent.width
+                visible: root.mango.managed
+                label: strings.t("fps.graph")
+                description: strings.t("fps.graphHint")
+                checked: root.mango.graph
+                hasCursor: root.cursorOn("graph")
+                onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(graphToggle)
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onClicked: if (root.service) root.service.setFpsGraph(!root.mango.graph)
+                onHovered: function(h) { if (h) root.point("graph", 0) }
+              }
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                text: strings.t("fps.launchHint")
                 color: root.dimFg
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 wrapMode: Text.WordWrap
-                anchors.left: parent.left
-                anchors.right: installButton.left
-                anchors.rightMargin: Style.space(10)
-                anchors.verticalCenter: parent.verticalCenter
               }
 
               Button {
-                id: installButton
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                text: strings.t("fps.install")
-                iconText: ""
+                id: copyButton
+                text: root.copied ? strings.t("fps.copied") : strings.t("fps.copy")
+                iconText: root.copied ? "" : ""
                 bordered: true
                 foreground: root.fg
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
-                hasCursor: root.cursorOn("install")
-                onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(installButton)
-                onClicked: if (root.service) root.service.installMango()
-                onHovered: function(h) { if (h) root.point("install", 0) }
+                hasCursor: root.cursorOn("copy")
+                onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(copyButton)
+                onClicked: root.copyLaunchOption()
+                onHovered: function(h) { if (h) root.point("copy", 0) }
+              }
+
+              Text {
+                width: parent.width
+                visible: !!root.service && root.service.mangoFailed
+                textFormat: Text.PlainText
+                text: strings.t("fps.failed")
+                color: Commons.Color.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                wrapMode: Text.WordWrap
+              }
               }
             }
 
-            SmallToggle {
-              id: fpsToggle
+          }
+
+          // ---------- Game mode ----------
+          Column {
+            id: gamePage
+            visible: root.page === "gamemode"
+            width: parent.width
+            spacing: Style.space(10)
+
+            Item {
               width: parent.width
-              label: strings.t("fps.show")
-              description: strings.t("fps.showHint")
-              checked: root.mango.managed
-              hasCursor: root.cursorOn("fps")
-              onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(fpsToggle)
-              foreground: root.fg
-              fontFamily: root.fontFamily
-              onClicked: if (root.service) root.service.setFps(!root.mango.managed)
-              onHovered: function(h) { if (h) root.point("fps", 0) }
+              implicitHeight: Math.max(gmGlyph.implicitHeight, gmText.implicitHeight, gmPower.implicitHeight)
+
+              Text {
+                id: gmGlyph
+                textFormat: Text.PlainText
+                text: ""
+                color: root.gameOn ? Commons.Color.accent : root.fg
+                opacity: root.gameOn ? 1 : 0.5
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.display
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Column {
+                id: gmText
+                anchors.left: gmGlyph.right
+                anchors.leftMargin: Style.space(14)
+                anchors.right: gmPower.left
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(2)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: strings.t(root.gameOn ? "gm.titleOn" : "gm.titleOff")
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.title
+                  font.bold: true
+                  elide: Text.ElideRight
+                  width: parent.width
+                }
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: root.gmStateLine
+                  color: root.dimFg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                  width: parent.width
+                }
+              }
+
+              Button {
+                id: gmPower
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: strings.t(root.gm && root.gm.working ? "gm.wait" : root.gameOn ? "gm.restoreAll" : "gm.pauseTicked")
+                enabled: !!root.gm && !root.gm.working && !!root.gm.status && (root.gameOn || root.gm.tickedCount > 0)
+                selected: root.gameOn
+                bordered: true
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                hasCursor: root.cursorOn("gm-power")
+                onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(gmPower)
+                onClicked: root.toggleGameMode()
+                onHovered: function(h) { if (h) root.point("gm-power", 0) }
+              }
             }
 
-            SmallToggle {
-              id: graphToggle
-              width: parent.width
-              visible: root.mango.managed
-              label: strings.t("fps.graph")
-              description: strings.t("fps.graphHint")
-              checked: root.mango.graph
-              hasCursor: root.cursorOn("graph")
-              onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(graphToggle)
+            PanelSeparator { foreground: root.fg }
+
+            PanelSectionHeader {
+              visible: root.gmItems.length > 0
+              text: strings.t(root.gameOn ? "gm.headerOn" : "gm.headerOff")
               foreground: root.fg
               fontFamily: root.fontFamily
-              onClicked: if (root.service) root.service.setFpsGraph(!root.mango.graph)
-              onHovered: function(h) { if (h) root.point("graph", 0) }
             }
+
+            // Indexed rather than bound to the array, so a reading doesn't
+            // rebuild the rows under the pointer.
+            Repeater {
+              model: root.gmItems.length
+
+              delegate: SmallToggle {
+                id: gmRow
+                required property int index
+                readonly property var item: root.gmItems[index] || ({ key: "", kind: "app", label: "", detail: "", selected: false, paused: false })
+                readonly property string rowId: "gm-item-" + index
+                width: gamePage.width
+                label: item.label
+                description: root.gmRowDescription(item)
+                checked: root.gm ? (root.gameOn ? root.gm.paused(item) : root.gm.ticked(item)) : false
+                hasCursor: root.cursorOn(rowId)
+                onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(gmRow)
+                foreground: root.fg
+                onClicked: if (root.gm) root.gm.clickItem(item)
+                onHovered: function(h) { if (h) root.point(rowId, 0) }
+              }
+            }
+
+            Text {
+              visible: !!root.gm && !!root.gm.status && root.gmItems.length === 0
+              width: parent.width
+              textFormat: Text.PlainText
+              text: strings.t("gm.empty")
+              color: root.dimFg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            PanelSeparator { foreground: root.fg }
 
             Text {
               width: parent.width
               textFormat: Text.PlainText
-              text: strings.t("fps.launchHint")
+              text: strings.t("gm.footer")
               color: root.dimFg
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
-            }
-
-            Button {
-              id: copyButton
-              text: root.copied ? strings.t("fps.copied") : strings.t("fps.copy")
-              iconText: root.copied ? "" : ""
-              bordered: true
-              foreground: root.fg
-              fontFamily: root.fontFamily
-              fontSize: Style.font.caption
-              hasCursor: root.cursorOn("copy")
-              onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(copyButton)
-              onClicked: root.copyLaunchOption()
-              onHovered: function(h) { if (h) root.point("copy", 0) }
-            }
-
-            Text {
-              width: parent.width
-              visible: !!root.service && root.service.mangoFailed
-              textFormat: Text.PlainText
-              text: strings.t("fps.failed")
-              color: Commons.Color.urgent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-              wrapMode: Text.WordWrap
-            }
             }
           }
 

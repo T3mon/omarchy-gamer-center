@@ -5,10 +5,11 @@ import Quickshell.Hyprland
 import qs.Commons
 import qs.Commons as Commons
 import "overlay"
+import "gamemode"
 import "overlay/Metrics.js" as Metrics
 
-// Owns the Gamer Center overlay: its settings file, the stats helper, the HUD windows
-// and the MangoHud block. The bar panel only reads from here and calls in.
+// Owns the Gamer Center overlay (its settings file, the stats helper, the HUD windows,
+// the MangoHud block) and game mode. The bar panel only reads from here and calls in.
 Item {
   id: root
 
@@ -19,6 +20,7 @@ Item {
   readonly property string pluginDir: decodeURIComponent(String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "")).replace(/\/+$/, "")
   readonly property string statsHelper: pluginDir + "/bin/gamercenter-stats"
   readonly property string mangoHelper: pluginDir + "/bin/gamercenter-mangohud"
+  readonly property string gameModeHelper: pluginDir + "/bin/gamercenter-gamemode"
   readonly property string configDir: (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/gamer-center"
   readonly property string configPath: configDir + "/overlay.json"
 
@@ -360,6 +362,15 @@ Item {
     }
   }
 
+  // ------------------------------------------------------------ game mode
+
+  readonly property alias gameMode: gameModeItem
+
+  GameMode {
+    id: gameModeItem
+    helper: root.gameModeHelper
+  }
+
   // ------------------------------------------------------------ panel hooks
 
   function retainPreview() { previewRequests++ }
@@ -372,6 +383,7 @@ Item {
     out.streaming = streaming
     out.screens = targetScreens.map(function(s) { return String(s.name) })
     out.mangohud = mango
+    out.gameMode = gameModeItem.gameOn
     return out
   }
 
@@ -402,6 +414,16 @@ Item {
       var on = state === "on" ? true : state === "off" ? false : state === "toggle" ? !root.mango.managed : null
       if (on === null) return "use on, off or toggle"
       root.setFps(on)
+      return on ? "on" : "off"
+    }
+    function gamemode(state: string): string {
+      var gm = gameModeItem
+      var on = state === "on" ? true : state === "off" ? false : state === "toggle" ? !gm.gameOn : null
+      if (on === null) return "use on, off or toggle"
+      if (!gm.status) return "not ready"
+      if (gm.working) return "busy"
+      if (on && !gm.gameOn && gm.tickedCount === 0) return "nothing is ticked"
+      gm.setGameMode(on)
       return on ? "on" : "off"
     }
     function status(): string { return JSON.stringify(root.statusObject()) }

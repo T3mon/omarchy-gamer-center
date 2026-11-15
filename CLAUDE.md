@@ -1,6 +1,6 @@
 # Gamer Center
 
-Omarchy shell plugin `t3mon.gamercenter`: game tools in the bar. Built so far: a stats HUD over games and a MangoHud FPS switch. Ideas for later, built only when asked: a game mode (pause background processes while a game runs), Steam free games and deals, FPS for browser games.
+Omarchy shell plugin `t3mon.gamercenter`: game tools in the bar. The panel has two pages: Stats (a stats HUD over games and a MangoHud FPS switch) and Game mode (ported from YassineSawahi/omarchy-gamemode, MIT). Ideas for later, built only when asked: Steam free games and deals, FPS for browser games.
 
 Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how Omarchy plugins load, the `qs.Ui` kit, IPC, layer shell and the reload loop. This file covers only this plugin.
 
@@ -10,12 +10,15 @@ Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how O
 |---|---|
 | `manifest.json` | id `t3mon.gamercenter`, kinds `service` and `bar-widget` |
 | `Service.qml` | Always running. Owns the overlay settings, the stats helper, fullscreen detection, one HUD window per target screen, MangoHud control, and the IPC target `gamercenter` |
-| `Panel.qml` | Bar icon (gamepad) and the settings panel. Left-click opens the panel, right-click toggles the overlay |
+| `Panel.qml` | Bar icon (gamepad) and the panel with its Stats and Game mode pages. Left-click opens the panel, right-click toggles the overlay, middle-click toggles game mode |
+| `gamemode/GameMode.qml` | Game mode state, owned by the service: reads `gamercenter-gamemode status`, cleans it, starts switches detached |
 | `overlay/Metrics.js` | Pure JS with no QML types: settings defaults and sanitizing, positions, turning a stats sample into HUD lines. Tested in Node |
 | `overlay/HudWindow.qml` | Layer-shell window on the Overlay layer: click-through, no keyboard focus, namespace `gamer-center-hud` |
 | `overlay/HudCard.qml` | Draws the HUD (stacked grid or one line). The panel reuses it for its preview |
 | `bin/gamercenter-stats` | Stats streamer, Python standard library, one JSON object per line |
 | `bin/gamercenter-mangohud` | Manages our block in MangoHud.conf: `status`, `apply`, `remove` |
+| `bin/gamercenter-gamemode` | Game mode helper, ported from omarchy-gamemode: `status`, `select`, `on`, `off`, `toggle`, `pause`, `resume` |
+| `licenses/omarchy-gamemode.txt` | The MIT notice the port must keep |
 | `i18n/en.json` | Every UI string |
 | `tests/` | `run.sh` runs all checks |
 
@@ -28,6 +31,13 @@ Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how O
 - **Fullscreen**: `Hyprland.monitorFor(screen).activeWorkspace.toplevels`, with `lastIpcObject.fullscreen & 2`, refreshed on Hyprland raw events (debounced 100 ms, re-read 250 ms later). Over a fullscreen window the HUD ignores exclusive zones; otherwise it sits below the bar.
 - **MangoHud**: `mangoRun()` runs the helper one call at a time, queueing the rest. "Show FPS" writes the block on the side opposite the HUD, with a font size taken from the HUD scale, and `mangoFollow` re-applies it when the HUD moves. The install button opens a floating terminal running `omarchy pkg add mangohud`, plus `lib32-mangohud` when multilib has it.
 - **Panel to service**: the panel finds the service with `bar.shell.serviceFor("t3mon.gamercenter")`, retrying every second because the lookup isn't reactive. Every edit goes through the service: `setValue()`, `toggleMetric()`, `setEnabled()`, `setFps()`, `setFpsGraph()`.
+
+## Game mode
+
+- Ported from omarchy-gamemode 1.0.2 with its behavior kept. Our changes: state in `~/.local/state/gamer-center/gamemode/`, notifications as "Gamer Center", `nvidia-smi` skipped while the NVIDIA GPU is runtime-suspended, run as `python3 -I`.
+- `GameMode.qml` reads status every 20 s, every 3 s while the Game mode page is open (`watchers`), every 1 s while a switch runs. Switches run through `setsid -f` so they outlive a shell restart; a lock file in the state folder marks one in flight.
+- Item keys go back to the helper as single argv entries, after `validKey()`. Labels and details are stripped of control characters.
+- Tests must never run `on`, `off`, `pause` or `resume` for real: they close the user's apps and stop containers.
 
 ## Stats helper
 
@@ -63,6 +73,8 @@ omarchy plugin validate .
 - The HUD over a real fullscreen game, including the exclusion-mode switch.
 - The Install MangoHud and Copy buttons.
 - Right-click on the bar icon.
+- Game mode's Pause and Restore on this machine (they would close the user's apps).
+- Middle-click on the bar icon.
 
 ## Git
 
