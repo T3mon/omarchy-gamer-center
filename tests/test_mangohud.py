@@ -82,6 +82,16 @@ class MangoHudConfig(unittest.TestCase):
         self.assertIsNone(block)
         self.assertEqual(outside, ["a", "position=top-left", "user_line"])
 
+    def test_legacy_block_is_dropped(self):
+        self.write("gpu_stats\n# >>> omarchy game-overlay >>>\nfps\nposition=top-left\n# <<< omarchy game-overlay <<<\n")
+        self.run_cli("apply", "--position", "top-right")
+        text = self.read()
+        self.assertNotIn("game-overlay", text)
+        self.assertNotIn("position=top-left", text)
+        self.assertEqual(text.count(mh.BEGIN), 1)
+        self.run_cli("remove")
+        self.assertEqual(self.read(), "gpu_stats\n")
+
     def test_symlinked_config_is_written_through(self):
         real = os.path.join(self.home, "dotfiles", "MangoHud.conf")
         os.makedirs(os.path.dirname(real))

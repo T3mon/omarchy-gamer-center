@@ -21,6 +21,8 @@ import tempfile
 
 BEGIN = "# >>> omarchy gamer-center >>>"
 END = "# <<< omarchy gamer-center <<<"
+# Blocks written before the rename to Gamer Center: removed, never kept.
+LEGACY = {"# >>> omarchy game-overlay >>>": "# <<< omarchy game-overlay <<<"}
 POSITIONS = ("top-left", "top-center", "top-right", "middle-left", "middle-right",
              "bottom-left", "bottom-center", "bottom-right")
 LAYERS = ("/usr/lib/mangohud/libMangoHud.so", "/usr/lib/libMangoHud.so")
@@ -37,16 +39,23 @@ def config_path(env=None):
 def split_block(text):
     """(lines outside every managed block, lines of the last managed block or None).
 
+    Blocks with legacy markers count as managed but are never returned, so the
+    next write drops them.
+
     A BEGIN marker without a matching END is dropped, but the lines after it
     are kept as the user's: never delete what might not be ours.
     """
-    outside, block, current = [], None, None
+    outside, block, current, end = [], None, None, None
     for line in text.splitlines():
         marker = line.strip()
         if current is None and marker == BEGIN:
-            current = []
-        elif current is not None and marker == END:
-            block, current = current, None
+            current, end = [], END
+        elif current is None and marker in LEGACY:
+            current, end = [], LEGACY[marker]
+        elif current is not None and marker == end:
+            if end == END:
+                block = current
+            current = None
         elif current is not None:
             current.append(line)
         else:
