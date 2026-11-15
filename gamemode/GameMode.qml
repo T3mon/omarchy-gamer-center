@@ -214,20 +214,31 @@ Item {
   function toggleGameMode() { return setGameMode(!gameOn) }
 
   function clickItem(item) {
-    if (!item || !validKey(item.key)) return
+    if (!item) return
+    setItems([item], gameOn ? !paused(item) : !ticked(item))
+  }
+
+  // Switches several items to one state: ticked (off) or paused (on). A
+  // group's switch uses this, so a whole Docker section is one helper call.
+  function setItems(list, on) {
+    var keys = (list || []).filter(function(i) {
+      return i && validKey(i.key) && (root.gameOn ? root.paused(i) : root.ticked(i)) !== on
+    }).map(function(i) { return i.key }).slice(0, 64)
+    if (!keys.length) return
     if (gameOn) {
-      // While game mode is on a switch acts at once: pause one more, or bring one back.
+      // While game mode is on a switch acts at once: pause more, or bring some back.
       if (working) return
       var p = Object.assign({}, itemPending)
-      p[item.key] = paused(item) ? "resume" : "pause"
+      keys.forEach(function(k) { p[k] = on ? "pause" : "resume" })
       itemPending = p
-      launch([p[item.key], item.key])
+      launch([on ? "pause" : "resume"].concat(keys))
       return
     }
+    if (selectProc.running) return
     var s = Object.assign({}, selectPending)
-    s[item.key] = !ticked(item)
+    keys.forEach(function(k) { s[k] = on })
     selectPending = s
-    selectProc.command = ["python3", "-I", root.helper, "select", item.key, s[item.key] ? "on" : "off"]
+    selectProc.command = ["python3", "-I", root.helper, "select"].concat(keys, [on ? "on" : "off"])
     selectProc.running = true
   }
 

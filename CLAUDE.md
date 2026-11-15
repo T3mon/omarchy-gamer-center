@@ -17,7 +17,7 @@ Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how O
 | `overlay/HudCard.qml` | Draws the HUD (stacked grid or one line). The panel reuses it for its preview |
 | `bin/gamercenter-stats` | Stats streamer, Python standard library, one JSON object per line |
 | `bin/gamercenter-mangohud` | Manages our block in MangoHud.conf: `status`, `apply`, `remove` |
-| `bin/gamercenter-gamemode` | Game mode helper, ported from omarchy-gamemode: `status`, `select`, `on`, `off`, `toggle`, `pause`, `resume` |
+| `bin/gamercenter-gamemode` | Game mode helper, ported from omarchy-gamemode: `status`, `select`, `on`, `off`, `toggle`, `pause`, `resume`, `auto`, `detect` |
 | `licenses/omarchy-gamemode.txt` | The MIT notice the port must keep |
 | `i18n/en.json` | Every UI string |
 | `tests/` | `run.sh` runs all checks |
@@ -36,10 +36,11 @@ Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how O
 
 - Ported from omarchy-gamemode 1.0.2 with its behavior kept. Our changes: state in `~/.local/state/gamer-center/gamemode/`, notifications as "Gamer Center", `nvidia-smi` skipped while the NVIDIA GPU is runtime-suspended, run as `python3 -I`.
 - `GameMode.qml` reads status every 20 s, every 3 s while the Game mode page is open (`watchers`), every 1 s while a switch runs. Switches run through `setsid -f` so they outlive a shell restart; a lock file in the state folder marks one in flight.
-- Item keys go back to the helper as single argv entries, after `validKey()`. Labels and details are stripped of control characters.
+- Item keys go back to the helper as single argv entries, after `validKey()`. `select`, `pause` and `resume` take several keys (up to 64, checked against `ITEM_KEY`), so a section's switch is one call: `GameMode.setItems(list, on)`.
+- The panel groups items into sections (`gmGroups`: apps, docker, other), each with a `GroupTitle` row: target 0 folds it (`gmFolds`, default open except Docker over four projects), target 1 switches the whole section. Labels and details are stripped of control characters.
 - Automatic mode (our addition): `auto on|off` saves `"auto"` in `selection.json`; `detect` prints `{"game": name|null}` from comm and cmdline only (reaper SteamLaunch, a non-helper `.exe`, gamescope). `GameMode.qml` runs it every 3 s while auto is on, needs 2 readings in a row, runs `on --auto` (state `"auto": true`), and runs `off` 15 s after the game is gone only when the state has that mark. `gameHandled` stops it re-pausing after a manual restore mid-game.
 - Workspaces (our addition): pausing an app saves `windows` ([{class, title, workspace}] from `hyprctl clients -j`, matched by the app's pids). `reopen()` starts a thread that watches for new windows of those classes for up to 30 s and moves each one with `hl.dsp.window.move({ workspace, follow = false, window = "address:…" })`, matching by title, else the most-used workspace. Workspace names and addresses are checked against strict patterns before going into the Lua string.
-- Docker items need the user in the `docker` group; without it `docker ps` is refused and no projects are listed.
+- Docker items need the user in the `docker` group; without it `docker ps` is refused and no projects are listed. Omarchy leaves users out of that group on purpose (it's root-equivalent); the opt-in is Setup > Security > Sudoless Docker, and it needs a reboot, not just a logout.
 - `split_title()`: Chromium-based browsers put their whole command line in argv[0]; it's split when its first word is the program (`/proc/<pid>/exe`).
 - Tests must never run `on`, `off`, `pause` or `resume` for real: they close the user's apps and stop containers.
 
@@ -80,6 +81,7 @@ omarchy plugin validate .
 - Game mode's Pause and Restore on this machine (they would close the user's apps).
 - Automatic mode with a real game running.
 - Middle-click on the bar icon.
+- A section's switch in the Game mode list (folding was checked).
 
 ## Git
 

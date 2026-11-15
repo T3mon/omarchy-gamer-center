@@ -102,5 +102,10 @@
   "gm.middleOff": "Middle-click to turn game mode off",
   "gm.auto": "Turn on when a game opens",
   "gm.autoHint": "Pauses what's ticked when a game opens and brings it back 15 s after it closes",
-  "gm.autoPlaying": "Playing %1"
+  "gm.autoPlaying": "Playing %1",
+  "gm.group.apps": "Apps",
+  "gm.group.docker": "Docker",
+  "gm.group.other": "Other",
+  "gm.groupTicked": "%1 of %2 ticked",
+  "gm.groupPaused": "%1 of %2 paused"
 }

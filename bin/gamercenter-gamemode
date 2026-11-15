@@ -10,14 +10,14 @@ With no arguments (or `status`) prints one JSON object for the Game mode page: t
 memory picture and one item per thing that can be paused, each an app
 (Chrome, Slack, …), a Docker compose project, or the file indexer.
 
-  select <key> on|off   tick or untick an item; remembered for next time
-  on                    pause every ticked item
-  off                   bring back everything that is paused
-  pause <key>           pause one more item while game mode is on
-  resume <key>          bring back one item; the last one turns game mode off
-  on --auto             as `on`, marked as started by a game, so the game's end turns it off
-  auto on|off           whether a game opening turns game mode on (Gamer Center's addition)
-  detect                print {"game": name} for a running game, or {"game": null}
+  select <key>... on|off  tick or untick items; remembered for next time
+  on                      pause every ticked item
+  off                     bring back everything that is paused
+  pause <key>...          pause more items while game mode is on
+  resume <key>...         bring items back; the last one turns game mode off
+  on --auto               as `on`, marked as started by a game, so the game's end turns it off
+  auto on|off             whether a game opening turns game mode on (Gamer Center's addition)
+  detect                  print {"game": name} for a running game, or {"game": null}
 
 Apps are asked to quit (SIGTERM), never killed, and reopen the way they were
 launched, Chrome with its last session. Compose projects stop as a whole and
@@ -1024,11 +1024,10 @@ def cmd_off():
     notify("Game mode off", body, "critical" if problems else "normal")
 
 
-def cmd_pause(key):
+def cmd_pause(keys):
     state = read_state() or {"since": int(time.time()), "items": [], "freedMB": 0}
-    if any(r["key"] == key for r in state["items"]):
-        return
-    items = [i for i in discover() if i["key"] == key]
+    held = {r["key"] for r in state["items"]}
+    items = [i for i in discover() if i["key"] in keys and i["key"] not in held]
     if not items:
         return
     _, _, _, problems = pause_items(items, state)
@@ -1036,27 +1035,38 @@ def cmd_pause(key):
         notify("Game mode", "; ".join(problems), "critical")
 
 
-def cmd_resume(key):
+def cmd_resume(keys):
     state = read_state()
     if not state:
         return
-    records = [r for r in state["items"] if r["key"] == key]
+    records = [r for r in state["items"] if r["key"] in keys]
     if not records:
         return
     problems = resume_records(records)
-    state["items"] = [r for r in state["items"] if r["key"] != key]
+    state["items"] = [r for r in state["items"] if r["key"] not in keys]
     save_state(state)
-    log("resumed " + key)
+    log("resumed " + ", ".join(sorted(keys)))
     if problems:
         notify("Game mode", "; ".join(problems), "critical")
     elif not state["items"]:
         notify("Game mode off", "Everything is back")
 
 
-def cmd_select(key, on):
+def cmd_select(keys, on):
     prefs = read_prefs()
-    prefs[key] = on
+    for key in keys:
+        prefs[key] = on
     write_json(PREFS, prefs)
+
+
+ITEM_KEY = re.compile(r"^(indexer|app:[^\s\x00-\x1f]+|docker:[^\x00-\x1f]+)$")
+
+
+def item_keys(args):
+    """Keys named on the command line, or None when one isn't an item key."""
+    if not args or len(args) > 64 or not all(len(a) <= 160 and ITEM_KEY.match(a) for a in args):
+        return None
+    return set(args)
 
 
 def main():
@@ -1066,17 +1076,17 @@ def main():
     if cmd == "status":
         print(json.dumps(status()))
         return
-    if cmd == "select" and len(args) == 3 and args[2] in ("on", "off"):
-        cmd_select(args[1], args[2] == "on")
+    if cmd == "select" and len(args) >= 3 and args[-1] in ("on", "off") and item_keys(args[1:-1]):
+        cmd_select(item_keys(args[1:-1]), args[-1] == "on")
         return
     if cmd == "auto" and len(args) == 2 and args[1] in ("on", "off"):
-        cmd_select("auto", args[1] == "on")
+        cmd_select(["auto"], args[1] == "on")
         return
     if cmd == "detect" and len(args) == 1:
         print(json.dumps({"game": find_game()}))
         return
     auto = cmd == "on" and args[1:] == ["--auto"]
-    if cmd not in ("on", "off", "toggle", "pause", "resume") or (cmd in ("pause", "resume") and len(args) != 2) \
+    if cmd not in ("on", "off", "toggle", "pause", "resume") or (cmd in ("pause", "resume") and not item_keys(args[1:])) \
             or (cmd in ("off", "toggle") and len(args) != 1) or (cmd == "on" and len(args) != 1 and not auto):
         print(__doc__, file=sys.stderr)
         sys.exit(2)
@@ -1092,9 +1102,9 @@ def main():
         elif cmd == "off":
             cmd_off()
         elif cmd == "pause":
-            cmd_pause(args[1])
+            cmd_pause(item_keys(args[1:]))
         else:
-            cmd_resume(args[1])
+            cmd_resume(item_keys(args[1:]))
 
 
 if __name__ == "__main__":

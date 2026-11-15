@@ -221,6 +221,54 @@ Panel {
       + (vram ? "\n" + vram + (gm.tickedVram > 0 ? " · " + strings.t("gm.frees").arg(size(gm.tickedVram)) : "") : "")
   }
 
+  // The list in sections: apps, Docker projects, then the rest (the indexer).
+  // Each keeps indexes into gmItems so rows and the cursor stay stable.
+  readonly property var gmGroups: {
+    var defs = [{ id: "apps", kinds: ["app"] }, { id: "docker", kinds: ["docker"] }, { id: "other", kinds: ["indexer"] }]
+    var out = []
+    for (var d = 0; d < defs.length; d++) {
+      var idx = []
+      for (var i = 0; i < gmItems.length; i++) if (defs[d].kinds.indexOf(gmItems[i].kind) >= 0) idx.push(i)
+      if (idx.length) out.push({ id: defs[d].id, indexes: idx })
+    }
+    return out
+  }
+
+  // Folded sections, by id. Unset means the default: open, except Docker
+  // once it has more than four projects.
+  property var gmFolds: ({})
+  function gmGroupOpen(group) {
+    var v = gmFolds[group.id]
+    return v !== undefined ? v : !(group.id === "docker" && group.indexes.length > 4)
+  }
+  function toggleGmFold(id) {
+    var group = gmGroups.find(function(g) { return g.id === id })
+    if (!group) return
+    var next = Object.assign({}, gmFolds)
+    next[id] = !gmGroupOpen(group)
+    gmFolds = next
+  }
+
+  function gmGroupItems(group) { return group.indexes.map(function(i) { return gmItems[i] }) }
+  // On when every item in the section is ticked (or paused, while game mode is on).
+  function gmGroupOn(group) {
+    if (!gm) return false
+    return gmGroupItems(group).every(function(i) { return gameOn ? gm.paused(i) : gm.ticked(i) })
+  }
+  function toggleGmGroup(id) {
+    var group = gmGroups.find(function(g) { return g.id === id })
+    if (group && gm) gm.setItems(gmGroupItems(group), !gmGroupOn(group))
+  }
+  function gmGroupSummary(group) {
+    if (!gm) return ""
+    var list = gmGroupItems(group)
+    var on = list.filter(function(i) { return gameOn ? gm.paused(i) : gm.ticked(i) }).length
+    var mb = list.reduce(function(sum, i) { return sum + i.mb }, 0)
+    var line = strings.t(gameOn ? "gm.groupPaused" : "gm.groupTicked")
+      .arg(Commons.I18n.formatNumber(on)).arg(Commons.I18n.formatNumber(list.length))
+    return mb > 0 ? line + " · " + gb(mb) : line
+  }
+
   function gmRowDescription(item) {
     var p = gm ? gm.itemPending[item.key] : undefined
     if (p === "pause") return strings.t(item.kind === "app" ? "gm.closing" : "gm.stopping")
@@ -278,7 +326,11 @@ Panel {
     var list = [{ id: "page", count: 2 }]
     if (page === "gamemode") {
       list.push({ id: "gm-power", count: 1 }, { id: "gm-auto", count: 1 })
-      for (var g = 0; g < gmItems.length; g++) list.push({ id: "gm-item-" + g, count: 1 })
+      for (var g = 0; g < gmGroups.length; g++) {
+        list.push({ id: "gm-group-" + gmGroups[g].id, count: 2 })
+        if (gmGroupOpen(gmGroups[g]))
+          for (var n = 0; n < gmGroups[g].indexes.length; n++) list.push({ id: "gm-item-" + gmGroups[g].indexes[n], count: 1 })
+      }
       return list
     }
     list.push({ id: "enabled", count: 1 }, { id: "fold-position", count: 1 })
@@ -361,6 +413,7 @@ Panel {
     if (id === "page") setPage(col === 0 ? "stats" : "gamemode")
     else if (id === "gm-power") toggleGameMode()
     else if (id === "gm-auto") { if (gm) gm.setAuto(!gm.autoEnabled) }
+    else if (id.indexOf("gm-group-") === 0) { if (col === 0) toggleGmFold(id.slice(9)); else toggleGmGroup(id.slice(9)) }
     else if (id.indexOf("gm-item-") === 0) { if (gm) gm.clickItem(gmItems[Number(id.slice(8))]) }
     else if (id === "enabled") service.setEnabled(!config.enabled)
     else if (id.indexOf("fold-") === 0) toggleFold(id)
@@ -960,32 +1013,58 @@ Panel {
 
             PanelSeparator { foreground: root.fg }
 
-            PanelSectionHeader {
+            Text {
               visible: root.gmItems.length > 0
+              width: parent.width
+              textFormat: Text.PlainText
               text: strings.t(root.gameOn ? "gm.headerOn" : "gm.headerOff")
-              foreground: root.fg
-              fontFamily: root.fontFamily
+              color: root.dimFg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
 
-            // Indexed rather than bound to the array, so a reading doesn't
-            // rebuild the rows under the pointer.
+            // One section per kind. Indexed rather than bound to the arrays,
+            // so a reading doesn't rebuild the rows under the pointer.
             Repeater {
-              model: root.gmItems.length
+              model: root.gmGroups.length
 
-              delegate: SmallToggle {
-                id: gmRow
+              delegate: Column {
+                id: gmSection
                 required property int index
-                readonly property var item: root.gmItems[index] || ({ key: "", kind: "app", label: "", detail: "", selected: false, paused: false })
-                readonly property string rowId: "gm-item-" + index
+                readonly property var group: root.gmGroups[index] || ({ id: "", indexes: [] })
+                readonly property bool open: root.gmGroupOpen(group)
                 width: gamePage.width
-                label: item.label
-                description: root.gmRowDescription(item)
-                checked: root.gm ? (root.gameOn ? root.gm.paused(item) : root.gm.ticked(item)) : false
-                hasCursor: root.cursorOn(rowId)
-                onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(gmRow)
-                foreground: root.fg
-                onClicked: if (root.gm) root.gm.clickItem(item)
-                onHovered: function(h) { if (h) root.point(rowId, 0) }
+                spacing: Style.space(6)
+
+                GroupTitle {
+                  rowId: "gm-group-" + gmSection.group.id
+                  text: strings.t("gm.group." + (gmSection.group.id || "other"))
+                  summary: root.gmGroupSummary(gmSection.group)
+                  open: gmSection.open
+                  checked: root.gmGroupOn(gmSection.group)
+                }
+
+                Repeater {
+                  model: gmSection.open ? gmSection.group.indexes.length : 0
+
+                  delegate: SmallToggle {
+                    id: gmRow
+                    required property int index
+                    readonly property int itemIndex: gmSection.group.indexes[index]
+                    readonly property var item: root.gmItems[itemIndex] || ({ key: "", kind: "app", label: "", detail: "", selected: false, paused: false })
+                    readonly property string rowId: "gm-item-" + itemIndex
+                    width: gamePage.width
+                    label: item.label
+                    description: root.gmRowDescription(item)
+                    checked: root.gm ? (root.gameOn ? root.gm.paused(item) : root.gm.ticked(item)) : false
+                    hasCursor: root.cursorOn(rowId)
+                    onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(gmRow)
+                    foreground: root.fg
+                    onClicked: if (root.gm) root.gm.clickItem(item)
+                    onHovered: function(h) { if (h) root.point(rowId, 0) }
+                  }
+                }
               }
             }
 
@@ -1084,6 +1163,92 @@ Panel {
 
     HoverHandler {
       onHoveredChanged: if (hovered) root.point(fold.rowId, 0)
+    }
+  }
+
+  // A Game mode section's title: the left part folds it (target 0), the
+  // switch ticks or pauses the whole section (target 1).
+  component GroupTitle: Item {
+    id: groupTitle
+    property string rowId: ""
+    property string text: ""
+    property string summary: ""
+    property bool open: true
+    property bool checked: false
+    width: parent ? parent.width : 0
+    implicitHeight: Math.max(groupFold.implicitHeight, groupSwitch.implicitHeight + Style.spacing.xs * 2)
+
+    CursorSurface {
+      id: groupFold
+      anchors.left: parent.left
+      anchors.right: groupSwitch.left
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+      implicitHeight: Math.max(groupHeader.implicitHeight, groupChevron.implicitHeight) + Style.spacing.xs * 2
+      hasCursor: root.cursorOn(groupTitle.rowId, 0)
+      onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(groupTitle)
+      foreground: root.fg
+
+      Text {
+        id: groupChevron
+        textFormat: Text.PlainText
+        text: groupTitle.open ? "\uf078" : "\uf054"
+        color: root.dimFg
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        width: Style.space(14)
+        anchors.left: parent.left
+        anchors.leftMargin: Style.space(6)
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      PanelSectionHeader {
+        id: groupHeader
+        text: groupTitle.text
+        foreground: root.fg
+        fontFamily: root.fontFamily
+        anchors.left: groupChevron.right
+        anchors.leftMargin: Style.space(4)
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        text: groupTitle.summary
+        color: root.dimFg
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+        horizontalAlignment: Text.AlignRight
+        anchors.left: groupHeader.right
+        anchors.leftMargin: Style.space(10)
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(6)
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      MouseArea {
+        anchors.fill: parent
+        cursorShape: Qt.PointingHandCursor
+        onClicked: root.toggleGmFold(groupTitle.rowId.slice(9))
+      }
+
+      HoverHandler {
+        onHoveredChanged: if (hovered) root.point(groupTitle.rowId, 0)
+      }
+    }
+
+    ToggleSwitch {
+      id: groupSwitch
+      checked: groupTitle.checked
+      hasCursor: root.cursorOn(groupTitle.rowId, 1)
+      trackHeight: Style.space(16)
+      foreground: root.fg
+      anchors.right: parent.right
+      anchors.rightMargin: Style.spacing.sm + Style.space(2) - (cursorRing ? cursorPad : 0)
+      anchors.verticalCenter: parent.verticalCenter
+      onToggled: root.toggleGmGroup(groupTitle.rowId.slice(9))
+      onHovered: function(h) { if (h) root.point(groupTitle.rowId, 1) }
     }
   }
 

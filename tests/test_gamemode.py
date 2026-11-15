@@ -58,7 +58,7 @@ class GameModeTest(unittest.TestCase):
     # ------------------------------------------------------------ files
 
     def test_selection_is_remembered_privately(self):
-        self.gm.cmd_select("app:slack", False)
+        self.gm.cmd_select(["app:slack"], False)
         self.assertEqual(self.gm.read_prefs(), {"app:slack": False})
         self.assertEqual(self.mode(self.dir), 0o700)
         self.assertEqual(self.mode(self.gm.PREFS), 0o600)
@@ -66,7 +66,7 @@ class GameModeTest(unittest.TestCase):
     def test_existing_open_folder_is_tightened(self):
         self.dir.mkdir(mode=0o755, parents=True)
         os.chmod(self.dir, 0o755)
-        self.gm.cmd_select("indexer", True)
+        self.gm.cmd_select(["indexer"], True)
         self.assertEqual(self.mode(self.dir), 0o700)
 
     def test_file_others_can_write_is_ignored(self):
@@ -446,6 +446,20 @@ class GameModeTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         r = subprocess.run([sys.executable, "-I", str(SCRIPT), "pause"], env=env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 2)
+        for bad in (["pause", "--all"], ["resume", "app:x", "rm -rf"], ["select", "app:x", "maybe"], ["select", "on"]):
+            r = subprocess.run([sys.executable, "-I", str(SCRIPT), *bad], env=env, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2, bad)
+
+    def test_a_whole_group_is_ticked_at_once(self):
+        env = dict(os.environ, XDG_STATE_HOME=str(self.tmp))
+        r = subprocess.run([sys.executable, "-I", str(SCRIPT), "select", "docker:shop", "docker:llm", "app:slack", "off"],
+                           env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        prefs = json.loads((self.tmp / "gamer-center" / "gamemode" / "selection.json").read_text())
+        self.assertEqual(prefs, {"docker:shop": False, "docker:llm": False, "app:slack": False})
+        self.assertEqual(self.gm.item_keys(["docker:my stack", "indexer"]), {"docker:my stack", "indexer"})
+        self.assertIsNone(self.gm.item_keys(["app:a b"]))
+        self.assertIsNone(self.gm.item_keys(["app:x"] * 65))
 
 
 if __name__ == "__main__":
