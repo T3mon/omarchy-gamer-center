@@ -73,13 +73,15 @@ def kv_bytes(node, strings=None):
     return out + b"\x08"
 
 
-def appinfo_bytes(apps, covers=None):
-    """covers: app id -> the capsule file appinfo names for it."""
+def appinfo_bytes(apps, covers=None, decks=None):
+    """covers: app id -> the capsule file appinfo names for it. decks: app id -> Deck category."""
     strings, body = [], b""
     for appid, (name, kind) in apps.items():
         common = {"name": name, "type": kind}
         if covers and appid in covers:
             common["library_assets_full"] = {"library_capsule": {"image": {"english": covers[appid]}}}
+        if decks and appid in decks:
+            common["steam_deck_compatibility"] = {"category": decks[appid], "tests": {"0": {"display": 4}}}
         kv = kv_bytes({"appinfo": {"appid": appid, "common": common}}, strings)
         body += struct.pack("<II", appid, 60 + len(kv)) + b"\0" * 60 + kv
     body += struct.pack("<I", 0)
@@ -134,7 +136,7 @@ class FakeSteam:
         self.write("config/loginusers.vdf", text_vdf("users", {STEAMID: {"AccountName": "x", "MostRecent": "1"}}))
         self.write("userdata/%d/config/localconfig.vdf" % ACCOUNT, text_vdf("UserLocalConfigStore", {
             "Software": {"Valve": {"Steam": {"apps": {
-                str(MANOR): {"LastPlayed": "1700000000", "Playtime": "1781"},
+                str(MANOR): {"LastPlayed": "1700000000", "Playtime": "1781", "LaunchOptions": "mangohud\x07 %command%"},
                 str(TEAMFIGHT): {"LastPlayed": "1700000500", "Playtime": "726"},
                 str(RIMWORLD): {"LastPlayed": "1600000000", "Playtime": "6000"},
             }}}}}))
@@ -142,11 +144,13 @@ class FakeSteam:
         self.write_bytes("appcache/packageinfo.vdf", packageinfo_bytes(PACKAGES))
         self.write_bytes("userdata/%d/config/licensecache" % ACCOUNT, licensecache_bytes(LICENSES, ACCOUNT))
 
-    def manifest(self, library, appid, name, size, last=0):
+    def manifest(self, library, appid, name, size, last=0, installdir=None):
         path = os.path.join(library, "steamapps", "appmanifest_%d.acf" % appid)
+        state = {"appid": appid, "name": name, "StateFlags": 4, "SizeOnDisk": size, "LastPlayed": last}
+        if installdir is not None:
+            state["installdir"] = installdir
         with open(path, "w") as handle:
-            handle.write(text_vdf("AppState", {"appid": appid, "name": name, "StateFlags": 4,
-                                               "SizeOnDisk": size, "LastPlayed": last}))
+            handle.write(text_vdf("AppState", state))
 
     def write(self, rel, text):
         with open(os.path.join(self.root, rel), "w") as handle:
@@ -256,6 +260,29 @@ class SteamLibraryTest(unittest.TestCase):
         self.assertEqual(games["RimWorld"]["cover"], "")
         for bad in ("../x.jpg", "a/b.jpg", "x.svg", "%s/x.jpg" % ("g" * 40), ""):
             self.assertEqual(steam.capsule_asset({"library_assets_full": {"library_capsule": {"image": {"english": bad}}}}), "")
+
+    def test_deck_status_comes_from_appinfo(self):
+        self.fake.write_bytes("appcache/appinfo.vdf", appinfo_bytes(APPS, decks={MANOR: 2, TEAMFIGHT: 9}))
+        games = self.games()
+        self.assertEqual([games[n]["deck"] for n in ("Manor Lords", "Teamfight Manager", "RimWorld")], [2, 0, 0])
+
+    def test_launch_options_come_from_localconfig(self):
+        games = self.games()
+        self.assertEqual(games["Manor Lords"]["launchOptions"], "mangohud  %command%")
+        self.assertEqual(games["RimWorld"]["launchOptions"], "")
+
+    def test_install_folder_is_a_real_folder_under_steamapps_common(self):
+        os.makedirs(os.path.join(self.fake.root, "steamapps", "common", "Manor Lords"))
+        os.makedirs(os.path.join(self.fake.extra, "steamapps", "common"))
+        os.symlink(self.tmp.name, os.path.join(self.fake.extra, "steamapps", "common", "Teamfight"))
+        self.fake.manifest(self.fake.root, MANOR, "Manor Lords", 1, installdir="Manor Lords")
+        self.fake.manifest(self.fake.extra, TEAMFIGHT, "Teamfight Manager", 1, installdir="Teamfight")
+        games = self.games()
+        self.assertEqual(games["Manor Lords"]["folder"], os.path.join(self.fake.root, "steamapps", "common", "Manor Lords"))
+        self.assertEqual(games["Teamfight Manager"]["folder"], "")      # a link out of the library
+        self.assertEqual(games["RimWorld"]["folder"], "")
+        for bad in ("..", ".", "", "a/../../x", "x\n", "Missing", None, 5):
+            self.assertEqual(steam.game_folder(self.fake.root, bad), "")
 
     def test_scramble_is_its_own_inverse(self):
         data = os.urandom(200)

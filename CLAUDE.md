@@ -1,6 +1,6 @@
 # Gamer Center
 
-Omarchy shell plugin `t3mon.gamercenter`: game tools in the bar. The panel has three pages: Stats (a stats HUD over games and a MangoHud FPS switch), Game mode (ported from YassineSawahi/omarchy-gamemode, MIT) and Steam (the library, its readers ported from Rysen-Winters/omarchy-quick-steam, MIT). Ideas for later, built only when asked: Steam free games and deals, FPS for browser games.
+Omarchy shell plugin `t3mon.gamercenter`: game tools in the bar. The panel has three pages and opens on Steam: Stats (a stats HUD over games and a MangoHud FPS switch), Game mode (ported from YassineSawahi/omarchy-gamemode, MIT) and Steam (the library, its readers ported from Rysen-Winters/omarchy-quick-steam, MIT). Ideas for later, built only when asked: Steam free games and deals, FPS for browser games.
 
 Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how Omarchy plugins load, the `qs.Ui` kit, IPC, layer shell and the reload loop. This file covers only this plugin.
 
@@ -13,7 +13,7 @@ Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how O
 | `Panel.qml` | Bar icon (gamepad) and the panel with its Stats, Game mode and Steam pages. Left-click opens the panel, right-click toggles the overlay, middle-click toggles game mode |
 | `gamemode/GameMode.qml` | Game mode state, owned by the service: reads `gamercenter-gamemode status`, cleans it, starts switches detached |
 | `steam/Steam.qml` | The Steam library, owned by the service: reads `gamercenter-steam` while a panel shows the Steam page, opens steam:// links |
-| `steam/Library.js` | Pure JS for the Steam page: cleaning the reading, the two lists and their sort, cover paths and URLs, days ago, the steam:// links. Tested in Node |
+| `steam/Library.js` | Pure JS for the Steam page: cleaning the reading, the two lists, their sort and search, cover and folder paths, Deck status, theme colors, days ago, the steam:// links. Tested in Node |
 | `overlay/Metrics.js` | Pure JS with no QML types: settings defaults and sanitizing, positions, turning a stats sample into HUD lines. Tested in Node |
 | `overlay/HudWindow.qml` | Layer-shell window on the Overlay layer: click-through, no keyboard focus, namespace `gamer-center-hud` |
 | `overlay/HudCard.qml` | Draws the HUD (stacked grid or one line). The panel reuses it for its preview |
@@ -50,13 +50,16 @@ Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how O
 
 ## Steam
 
-- Bare minimum on purpose, as asked: drives, Installed / Not installed, sort (Recent, Name, Size), details with time played, Launch, Install, Uninstall, and local covers. Laid out like Quick Steam (list left, details right, drives along the bottom), without its search, ProtonDB, Store button or key hints. Nothing else until asked.
-- `gamercenter-steam` reads, under the Steam root: `libraryfolders.vdf`, every `appmanifest_*.acf` (installed, `SizeOnDisk`), `userdata/<id>/config/licensecache` (live licenses; unscrambled with the account id as seed, CRC-checked, refunded and expired flags dropped), `appcache/packageinfo.vdf` (apps per package), `appcache/appinfo.vdf` (name and type, parsed only for owned or installed ids), `localconfig.vdf` (LastPlayed, Playtime in minutes), and covers from `appcache/librarycache/<appid>/`: the file appinfo's `library_assets_full.library_capsule.image` names (checked against `SAFE_ASSET`), else `library_600x900.jpg`, else any `*/library_capsule.jpg`. Never fetched; `Library.cover()` only lets through paths in that cache. Only type `game` is listed; tools and DLC aren't. No licensecache means every cached package counts.
+- Bare minimum on purpose, as asked: drives, Installed / Not installed, sort (Recent, Name, Size), search, details with time played and Steam Deck status, Launch, Install, Uninstall, an open-folder icon, a launch-options icon, and local covers. Laid out like Quick Steam (list left, details right, drives along the bottom), without its search, ProtonDB, Store button or key hints. Nothing else until asked.
+- `gamercenter-steam` reads, under the Steam root: `libraryfolders.vdf`, every `appmanifest_*.acf` (installed, `SizeOnDisk`), `userdata/<id>/config/licensecache` (live licenses; unscrambled with the account id as seed, CRC-checked, refunded and expired flags dropped), `appcache/packageinfo.vdf` (apps per package), `appcache/appinfo.vdf` (name and type, parsed only for owned or installed ids), `localconfig.vdf` (LastPlayed, Playtime in minutes, LaunchOptions), `installdir` from each manifest (`game_folder()`: a plain name under `steamapps/common`, a real folder, not a link), Deck status from appinfo's `steam_deck_compatibility.category` (0 unknown, 1 unsupported, 2 playable, 3 verified), and covers from `appcache/librarycache/<appid>/`: the file appinfo's `library_assets_full.library_capsule.image` names (checked against `SAFE_ASSET`), else `library_600x900.jpg`, else any `*/library_capsule.jpg`. Never fetched; `Library.cover()` only lets through paths in that cache. Only type `game` is listed; tools and DLC aren't. No licensecache means every cached package counts.
 - Drives are merged by `st_dev`: one row per disk, with `statvfs` free and total.
 - `Steam.qml` runs the helper when a panel's Steam page opens (`watchers`) and every 5 s while it stays open; an unchanged reading is skipped. A reading takes about 0.1 s here (118 games).
-- Actions are `steam://rungameid/N`, `steam://install/N`, `steam://uninstall/N` through `uwsm-app -- xdg-open URL` (plain `xdg-open` without uwsm). Install and Uninstall open Steam's own dialog (drive pick, confirm); the panel closes after any action. Quick Steam's `steam -silent +app_install ID FOLDER` path is not used.
+- Actions are `steam://rungameid/N`, `steam://install/N`, `steam://uninstall/N`, `steam://gameproperties/N` through `uwsm-app -- xdg-open URL` (plain `xdg-open` without uwsm). Install and Uninstall open Steam's own dialog (drive pick, confirm); the panel closes after any action. Quick Steam's `steam -silent +app_install ID FOLDER` path is not used.
 - The page is wider than the others (`contentWidth` 760 vs 400). The list is a `ListView` with an int model over `stGames`, so a new reading updates rows in place. `stGameId` is the picked game; `stIndex` falls back to the first row, so the right side is never empty while there are games.
-- Keyboard rows: `st-top` (two tabs, then the sorts), `st-game-i` (moving onto one picks it), `st-actions`. Right on a game goes to the buttons; left at the first button, or up, goes back. Esc closes the panel.
+- Search: `stQuery`, matched by `Library.matches()` (every word, case and accents folded). The box is a plain `TextInput`; while `stSearching` is true `keyCatcher.blocked` hands it every key, and its own handler takes Esc (clear, then leave), Up, Down, Enter and Tab. `/` or Enter on `st-search` starts it. Cleared when the panel closes.
+- Actions: `stActions` is the text buttons (run, uninstall / install) then the icon-only ones, `folder` (installed with a folder) and `options` (`steam://gameproperties/N`, Steam's Properties window with the launch options; the tooltip shows the current ones). The folder opens through `Steam.openFolder()` with the same `uwsm-app -- xdg-open` argv, after `Library.folder()`.
+- Colors: Launch green, Install accent, Uninstall `Color.urgent`; Deck Verified green, Playable yellow, Unsupported urgent. The shell has no green or yellow, so `themeColorsFile` reads the theme's `colors.toml` (`Library.themeColors()`: `green`/`yellow`, else `color2`/`color3`) when the panel or the Steam page opens; foreground when missing.
+- Keyboard rows: `st-top` (two tabs, then the sorts), `st-search`, `st-game-i` (moving onto one picks it), `st-actions`. Right on a game goes to the buttons; left at the first button, or up, goes back. Esc closes the panel.
 - Dates: `Library.daysAgo()` counts calendar days from `stNow`, set when the panel opens: today, yesterday, N days ago under 30, else "MMM yyyy".
 
 ## Stats helper
@@ -97,7 +100,7 @@ omarchy plugin validate .
 - Automatic mode with a real game running.
 - Middle-click on the bar icon.
 - The All switch and the Docker folder's switch in the Game mode list (folding was checked).
-- The Steam page's Launch, Install and Uninstall (they start Steam or its dialogs), and its keyboard and mouse use: tab switch, sort, picking a game, moving to the buttons. Both tabs with covers and the details side were checked in screenshots.
+- The Steam page's Launch, Install, Uninstall, folder and launch-options buttons (they start Steam, its dialogs or the file manager), and its keyboard and mouse use: tab switch, sort, picking a game, moving to the buttons, typing in search, the icon tooltips. Both tabs, a preset search, the colors, and the Deck line were checked in screenshots.
 
 ## Git
 

@@ -6,7 +6,8 @@
 var SORTS = ["recent", "name", "size"]
 var MAX_GAMES = 5000
 var MAX_DRIVES = 16
-var ACTIONS = { run: "steam://rungameid/", install: "steam://install/", uninstall: "steam://uninstall/" }
+var ACTIONS = { run: "steam://rungameid/", install: "steam://install/", uninstall: "steam://uninstall/",
+               options: "steam://gameproperties/" }
 
 function validId(id) {
   return typeof id === "string" && /^[0-9]{1,10}$/.test(id)
@@ -24,6 +25,19 @@ function count(v) {
 function cover(v) {
   return typeof v === "string" && v.length <= 1024 && /^\/[^\u0000-\u001f]*\/appcache\/librarycache\/[0-9]{1,10}\/[^\u0000-\u001f]+\.(jpg|png)$/.test(v)
     && v.indexOf("/../") === -1 && v.indexOf("/./") === -1 ? v : ""
+}
+
+// A game's install folder: an absolute path ending in steamapps/common/<name>.
+function folder(v) {
+  return typeof v === "string" && v.length <= 4096 && /^\/[^\u0000-\u001f\u007f]*\/steamapps\/common\/[^\/\u0000-\u001f\u007f]+$/.test(v)
+    && (v + "/").indexOf("/../") === -1 && (v + "/").indexOf("/./") === -1 ? v : ""
+}
+
+// Steam Deck status names, by Steam's category number.
+var DECK = ["unknown", "unsupported", "playable", "verified"]
+
+function deck(v) {
+  return typeof v === "number" && v >= 1 && v <= 3 ? DECK[Math.floor(v)] : "unknown"
 }
 
 // file:// URL for a cover path, each segment escaped.
@@ -77,7 +91,10 @@ function clean(data) {
       drive: where,
       lastPlayed: count(g.lastPlayed),
       playtime: count(g.playtime),
-      cover: cover(g.cover)
+      cover: cover(g.cover),
+      deck: deck(g.deck),
+      folder: installed ? folder(g.folder) : "",
+      launchOptions: text(g.launchOptions, 500)
     })
   }
   return { uwsm: data.uwsm === true, drives: drives, games: games }
@@ -94,10 +111,27 @@ function byName(a, b) {
   return x < y ? -1 : x > y ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
 }
 
-// The installed (or not installed) games, in the chosen order.
-function list(games, installed, sort) {
+// Lower case, accents dropped, so "pokemon" finds "Pokémon".
+function fold(v) {
+  var s = String(v || "").toLowerCase()
+  return typeof s.normalize === "function" ? s.normalize("NFD").replace(/[\u0300-\u036f]/g, "") : s
+}
+
+// The search's words; a game has to contain every one of them.
+function words(query) {
+  return fold(query).split(/\s+/).filter(function(w) { return w.length > 0 }).slice(0, 8)
+}
+
+function matches(game, query) {
+  var name = fold(game.name), want = words(query)
+  for (var i = 0; i < want.length; i++) if (name.indexOf(want[i]) === -1) return false
+  return true
+}
+
+// The installed (or not installed) games matching the search, in the chosen order.
+function list(games, installed, sort, query) {
   var s = sortFor(sort, installed)
-  var out = (games || []).filter(function(g) { return g.installed === installed })
+  var out = (games || []).filter(function(g) { return g.installed === installed && matches(g, query) })
   out.sort(function(a, b) {
     if (s === "recent" && a.lastPlayed !== b.lastPlayed) return b.lastPlayed - a.lastPlayed
     if (s === "size" && a.size !== b.size) return b.size - a.size
@@ -106,8 +140,21 @@ function list(games, installed, sort) {
   return out
 }
 
-function countInstalled(games, installed) {
-  return (games || []).filter(function(g) { return g.installed === installed }).length
+function countInstalled(games, installed, query) {
+  return (games || []).filter(function(g) { return g.installed === installed && matches(g, query) }).length
+}
+
+// green and yellow from a theme's colors.toml, "" when it has none.
+function themeColors(raw) {
+  var out = { green: "", yellow: "" }
+  var lines = String(raw || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var m = lines[i].match(/^\s*(green|yellow|color2|color3)\s*=\s*["']?(#[0-9A-Fa-f]{6})["']?\s*(#.*)?$/)
+    if (!m) continue
+    var key = m[1] === "color2" ? "green" : m[1] === "color3" ? "yellow" : m[1]
+    if (!out[key] || m[1] === key) out[key] = m[2]
+  }
+  return out
 }
 
 // "" for an unknown action or a bad id.

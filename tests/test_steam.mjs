@@ -88,6 +88,7 @@ test("steam links take only known actions and digit ids", () => {
   assert.equal(L.steamUrl("run", "1363080"), "steam://rungameid/1363080")
   assert.equal(L.steamUrl("install", "1"), "steam://install/1")
   assert.equal(L.steamUrl("uninstall", "1"), "steam://uninstall/1")
+  assert.equal(L.steamUrl("options", "1"), "steam://gameproperties/1")
   for (const [action, id] of [["run", "1; rm -rf ~"], ["run", ""], ["run", 5], ["run", "12345678901"],
                               ["open", "1"], ["toString", "1"], ["hasOwnProperty", "1"]]) {
     assert.equal(L.steamUrl(action, id), "")
@@ -130,6 +131,42 @@ test("days ago counts calendar days", () => {
   assert.equal(L.daysAgo(at(2026, 10, 1, 12, 0), now), 15)
   assert.equal(L.daysAgo(at(2026, 11, 1), now), 0)              // a clock in the future
   for (const never of [0, -5, NaN, null, undefined, "x"]) assert.equal(L.daysAgo(never, now), -1)
+})
+
+test("deck status, folder and launch options are cleaned", () => {
+  const data = reading()
+  Object.assign(data.games[0], { deck: 3, folder: "/s/steamapps/common/Manor Lords", launchOptions: "mangohud\u0007 %command%" })
+  Object.assign(data.games[1], { deck: 9, folder: "/s/steamapps/common/../../etc" })
+  Object.assign(data.games[2], { deck: 1, folder: "/s/steamapps/common/RimWorld" })   // not installed: no folder
+  const g = L.clean(data).games
+  assert.deepEqual(plain(g.map(x => [x.deck, x.folder, x.launchOptions])), [
+    ["verified", "/s/steamapps/common/Manor Lords", "mangohud  %command%"],
+    ["unknown", "", ""], ["unsupported", "", ""], ["unknown", "", ""]])
+  for (const bad of ["/etc", "/s/steamapps/common/", "/s/steamapps/common/a/b", "/s/steamapps/common/..",
+                     "/s/steamapps/common/.", "relative/steamapps/common/a", "/s/x\n/steamapps/common/a", 5])
+    assert.equal(L.folder(bad), "")
+  assert.equal(L.deck(2), "playable")
+  assert.equal(L.deck("3"), "unknown")
+})
+
+test("search matches every word, ignoring case and accents", () => {
+  const games = L.clean(reading()).games
+  games.push({ id: "9", name: "Pokémon Legends", installed: true, lastPlayed: 0, size: 0 })
+  const ids = (installed, q) => plain(L.list(games, installed, "name", q).map(g => g.id))
+  assert.deepEqual(ids(true, "  MANOR "), ["1"])
+  assert.deepEqual(ids(true, "pokemon leg"), ["9"])
+  assert.deepEqual(ids(true, "lords manor"), ["1"])
+  assert.deepEqual(ids(true, "manor x"), [])
+  assert.deepEqual(ids(true, ""), ids(true, undefined))
+  assert.equal(L.countInstalled(games, false, "rim"), 1)
+})
+
+test("theme colors read green and yellow, named keys first", () => {
+  assert.deepEqual(plain(L.themeColors('color2 = "#111111"\ngreen = "#adda78"\nyellow="#f9cc6c" # x\n')),
+                   { green: "#adda78", yellow: "#f9cc6c" })
+  assert.deepEqual(plain(L.themeColors("color2 = '#222222'\ncolor3 = \"#333333\"")), { green: "#222222", yellow: "#333333" })
+  assert.deepEqual(plain(L.themeColors("green = red\n")), { green: "", yellow: "" })
+  assert.deepEqual(plain(L.themeColors(null)), { green: "", yellow: "" })
 })
 
 test("used share stays between 0 and 1", () => {

@@ -58,6 +58,15 @@ Item {
     return true
   }
 
+  // The game's install folder, in the file manager.
+  function openFolder(id) {
+    var g = game(id)
+    var path = g ? Library.folder(g.folder) : ""
+    if (!path) return false
+    Quickshell.execDetached(Library.openCommand(path, !!library && library.uwsm))
+    return true
+  }
+
   onWatchersChanged: if (watchers > 0) refresh()
 
   Process {

@@ -4,7 +4,7 @@ Game tools for the Omarchy shell. The panel has three pages:
 
 - **Stats:** a HUD over your games (CPU and GPU load, temperature and clock, GPU power, RAM, VRAM, battery draw and the time) and a switch for MangoHud's in-game FPS counter.
 - **Game mode:** frees memory before you play by closing big apps, stopping Docker projects and the file indexer, then brings them all back afterwards.
-- **Steam:** your Steam games, installed or not, with their covers, size, time played, and Launch, Install and Uninstall, plus the free space on each drive with a Steam library.
+- **Steam:** your Steam games, installed or not, with search, their covers, size, time played, Steam Deck status, and Launch, Install, Uninstall, the game's folder and its launch options in Steam, plus the free space on each drive with a Steam library.
 
 ## Install
 
@@ -47,7 +47,9 @@ Chromium-based browsers rewrite their command line into one string; it's split b
 The Steam page reads Steam's own files on disk; nothing goes online, covers included.
 
 - **Installed** and **Not installed** split the games you own. Sort them by **Recent** (last played), **Name** or **Size** (installed games only).
-- The list on the left shows each game's cover, when you last played it and its size. The game you pick shows on the right: a big cover, when you last played it and for how long, its size and drive, and **Launch**, **Install** or **Uninstall**. Install and Uninstall open Steam's own dialog, where you pick the drive or confirm.
+- **Search** above the list filters both tabs as you type: every word has to be in the name, and case and accents don't matter. Press `/` or Enter on it to type; Esc clears it, then leaves it.
+- The list on the left shows each game's cover, when you last played it and its size. The game you pick shows on the right: a big cover, when you last played it and for how long, its size and drive, its Steam Deck status (Verified, Playable, Unsupported), and **Launch** (green), **Install** or **Uninstall** (red). Install and Uninstall open Steam's own dialog, where you pick the drive or confirm.
+- Two icon buttons after those: the folder opens the game's install folder in your file manager, and the terminal icon opens the game's Properties in Steam, where its launch options are set; hovering it shows the current ones (such as `mangohud %command%`). Colors come from your theme.
 - Along the bottom, each drive that holds a Steam library: how much is free, with a bar of how full it is.
 - Keyboard: up and down move through the games, right goes to the buttons, left comes back.
 

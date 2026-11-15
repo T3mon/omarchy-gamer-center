@@ -134,5 +134,15 @@
   "steam.hoursPlayed": "%1 h played",
   "steam.action.run": "Launch",
   "steam.action.install": "Install",
-  "steam.action.uninstall": "Uninstall"
+  "steam.action.uninstall": "Uninstall",
+  "steam.action.folder": "Open the game's folder",
+  "steam.action.options": "Launch options in Steam",
+  "steam.search": "Search  /",
+  "steam.noMatch": "No game matches.",
+  "steam.deck": "Steam Deck: %1",
+  "steam.deck.verified": "Verified",
+  "steam.deck.playable": "Playable",
+  "steam.deck.unsupported": "Unsupported",
+  "steam.deck.unknown": "Unknown",
+  "steam.launchOptions": "Launch options in Steam: %1"
 }

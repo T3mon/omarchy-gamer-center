@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import Quickshell
+import Quickshell.Io
 import qs.Ui
 import qs.Commons
 import qs.Commons as Commons
@@ -34,7 +35,7 @@ Panel {
 
   // Which page shows: "stats" (the overlay), "gamemode" or "steam". Kept
   // until the shell restarts.
-  property string page: "stats"
+  property string page: "steam"
   readonly property var pages: ["stats", "gamemode", "steam"]
   readonly property var gm: service ? service.gameMode : null
   readonly property bool gameOn: !!gm && gm.gameOn
@@ -49,13 +50,40 @@ Panel {
   property string stSort: "recent"
   property string stGameId: ""
   readonly property string stSortShown: Library.sortFor(stSort, stInstalled)
-  readonly property var stGames: steamModel ? Library.list(steamModel.games, stInstalled, stSort) : []
+  property string stQuery: ""
+  property bool stSearching: false
+  readonly property var stGames: steamModel ? Library.list(steamModel.games, stInstalled, stSort, stQuery) : []
   readonly property int stIndex: {
     for (var i = 0; i < stGames.length; i++) if (stGames[i].id === stGameId) return i
     return stGames.length ? 0 : -1
   }
   readonly property var stGame: stIndex >= 0 ? stGames[stIndex] : null
-  readonly property var stActions: !stGame ? [] : stGame.installed ? ["run", "uninstall"] : ["install"]
+  // Text buttons first, then the icon-only ones (folder, launch options).
+  readonly property var stActions: !stGame ? []
+    : (stGame.installed ? ["run", "uninstall"] : ["install"])
+        .concat(stGame.folder ? ["folder"] : [], ["options"])
+  // The theme's green and yellow, re-read each time the panel opens.
+  property var stTheme: ({ green: "", yellow: "" })
+  readonly property color stGreen: stTheme.green || fg
+  readonly property color stYellow: stTheme.yellow || fg
+
+  FileView {
+    id: themeColorsFile
+    path: Commons.Color.currentThemePath + "/colors.toml"
+    watchChanges: false
+    printErrors: false
+    onLoaded: root.stTheme = Library.themeColors(text())
+  }
+
+  function actionColor(action) {
+    return action === "run" ? stGreen : action === "install" ? Commons.Color.accent
+      : action === "uninstall" ? Commons.Color.urgent : fg
+  }
+
+  function deckColor(status) {
+    return status === "verified" ? stGreen : status === "playable" ? stYellow
+      : status === "unsupported" ? Commons.Color.urgent : dimFg
+  }
   readonly property var stSortOptions: ["recent", "name", "size"]
     .filter(function(v) { return stInstalled || v !== "size" })
     .map(function(v) { return { value: v, label: strings.t("steam.sort." + v) } })
@@ -155,13 +183,38 @@ Panel {
     if (g) stGameId = g.id
   }
 
-  // Launch, or Steam's own install or uninstall dialog. The panel closes so
+  // Launch, or Steam's own install, uninstall or properties dialog. The panel closes so
   // the game or the dialog isn't left behind it.
   function steamAction(action) {
-    if (steamModel && stGame && steamModel.open(action, stGame.id)) close()
+    if (!steamModel || !stGame) return
+    if (action === "folder") { if (steamModel.openFolder(stGame.id)) close() }
+    else if (steamModel.open(action, stGame.id)) close()
   }
 
-  onPageChanged: syncPreview()
+  // The search box takes the keys while it has the focus.
+  function startSearch() {
+    stSearching = true
+    cursorActive = true
+    cursorByMouse = false
+    cursorRow = "st-search"
+    cursorCol = 0
+  }
+
+  // Leaves the box; dy 1 goes on to the games, -1 back to the tabs.
+  function endSearch(dy) {
+    stSearching = false
+    if (dy > 0 && stGames.length) {
+      cursorRow = "st-game-" + Math.max(0, stIndex)
+      selectGame(Math.max(0, stIndex))
+    } else if (dy < 0) cursorRow = "st-top"
+    cursorCol = 0
+  }
+
+  onPageChanged: {
+    syncPreview()
+    stSearching = false
+    if (page === "steam" && opened) themeColorsFile.reload()
+  }
 
   // Middle click and the Pause button: with nothing ticked, show what could be.
   function toggleGameMode() {
@@ -191,8 +244,9 @@ Panel {
   onOpenedChanged: {
     if (opened) resolveService()
     syncPreview()
-    if (!opened) return
+    if (!opened) { stSearching = false; stQuery = ""; return }
     if (service) service.refreshMango()
+    if (page === "steam") themeColorsFile.reload()
     stNow = Date.now()
     cursorRow = page === "stats" ? "enabled" : page === "gamemode" ? "gm-power" : "st-top"
     cursorCol = 0
@@ -421,7 +475,7 @@ Panel {
     var list = [{ id: "page", count: pages.length }]
     if (page === "steam") {
       if (stPhase !== "ready") return list
-      list.push({ id: "st-top", count: 2 + stSortOptions.length })
+      list.push({ id: "st-top", count: 2 + stSortOptions.length }, { id: "st-search", count: 1 })
       for (var s = 0; s < stGames.length; s++) list.push({ id: "st-game-" + s, count: 1 })
       if (stActions.length) list.push({ id: "st-actions", count: stActions.length })
       return list
@@ -539,6 +593,7 @@ Panel {
       selectGame(Number(id.slice(8)))
       if (stActions.length) { cursorRow = "st-actions"; cursorCol = 0 }
     }
+    else if (id === "st-search") startSearch()
     else if (id === "st-actions") { if (stActions[col]) steamAction(stActions[col]) }
     else if (id === "gm-power") toggleGameMode()
     else if (id === "gm-auto") { if (gm) gm.setAuto(!gm.autoEnabled) }
@@ -641,6 +696,8 @@ Panel {
       }
       onActivateRequested: if (root.cursorActive) root.activateCursor()
       onCloseRequested: root.close()
+      blocked: root.stSearching
+      onTextKey: function(t, modifiers) { if (t === "/" && root.page === "steam" && root.stPhase === "ready") root.startSearch() }
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
       ScrollView {
@@ -1298,8 +1355,8 @@ Panel {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
                 options: [
-                  { value: "installed", label: strings.t("steam.installed").arg(Commons.I18n.formatNumber(root.steamModel ? Library.countInstalled(root.steamModel.games, true) : 0)) },
-                  { value: "other", label: strings.t("steam.notInstalled").arg(Commons.I18n.formatNumber(root.steamModel ? Library.countInstalled(root.steamModel.games, false) : 0)) }
+                  { value: "installed", label: strings.t("steam.installed").arg(Commons.I18n.formatNumber(root.steamModel ? Library.countInstalled(root.steamModel.games, true, root.stQuery) : 0)) },
+                  { value: "other", label: strings.t("steam.notInstalled").arg(Commons.I18n.formatNumber(root.steamModel ? Library.countInstalled(root.steamModel.games, false, root.stQuery) : 0)) }
                 ]
                 value: root.stInstalled ? "installed" : "other"
                 focusable: false
@@ -1329,13 +1386,103 @@ Panel {
               }
             }
 
+            // Search: Enter on it or "/" starts typing; Esc clears, then leaves.
+            CursorSurface {
+              id: stSearch
+              visible: steamPage.ready
+              anchors.left: parent.left
+              anchors.top: stTop.bottom
+              anchors.topMargin: Style.space(10)
+              width: stList.width - Style.space(8)
+              implicitHeight: Style.space(34)
+              bordered: true
+              foreground: root.fg
+              current: root.stSearching
+              hasCursor: root.cursorOn("st-search")
+
+              Text {
+                id: stSearchIcon
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
+                text: "\uf002"
+                color: root.dimFg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              Text {
+                anchors.left: stSearchInput.left
+                anchors.right: stSearchInput.right
+                anchors.verticalCenter: parent.verticalCenter
+                visible: stSearchInput.text === ""
+                textFormat: Text.PlainText
+                text: strings.t("steam.search")
+                color: root.dimFg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+
+              TextInput {
+                id: stSearchInput
+                anchors.left: stSearchIcon.right
+                anchors.leftMargin: Style.space(8)
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                clip: true
+                maximumLength: 80
+                color: root.fg
+                selectionColor: Util.alpha(root.fg, 0.3)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                Component.onCompleted: text = root.stQuery
+                onTextChanged: if (text !== root.stQuery) root.stQuery = text
+                onActiveFocusChanged: if (!activeFocus && root.stSearching) root.stSearching = false
+                Keys.onPressed: function(event) {
+                  if (event.key === Qt.Key_Escape) {
+                    if (text) text = ""
+                    else root.endSearch(0)
+                  } else if (event.key === Qt.Key_Down || event.key === Qt.Key_Return
+                             || event.key === Qt.Key_Enter || event.key === Qt.Key_Tab) {
+                    root.endSearch(1)
+                  } else if (event.key === Qt.Key_Up) {
+                    root.endSearch(-1)
+                  } else return
+                  event.accepted = true
+                }
+
+                Connections {
+                  target: root
+                  function onStQueryChanged() { if (stSearchInput.text !== root.stQuery) stSearchInput.text = root.stQuery }
+                  function onStSearchingChanged() {
+                    if (root.stSearching) stSearchInput.forceActiveFocus()
+                    else keyCatcher.forceActiveFocus()
+                  }
+                }
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                enabled: !root.stSearching
+                cursorShape: Qt.IBeamCursor
+                onClicked: root.startSearch()
+              }
+
+              HoverHandler {
+                onHoveredChanged: if (hovered) root.point("st-search", 0)
+              }
+            }
+
             // Indexed, so a new reading updates the rows in place.
             ListView {
               id: stList
               visible: steamPage.ready
               anchors.left: parent.left
-              anchors.top: stTop.bottom
-              anchors.topMargin: Style.space(10)
+              anchors.top: stSearch.bottom
+              anchors.topMargin: Style.space(8)
               anchors.bottom: stDriveBox.top
               anchors.bottomMargin: Style.space(10)
               width: Math.round(parent.width * 0.42)
@@ -1352,7 +1499,7 @@ Panel {
               }
 
               // A new order or list keeps the picked game in view.
-              readonly property string order: root.stSortShown + (root.stInstalled ? ":installed" : ":other")
+              readonly property string order: root.stSortShown + (root.stInstalled ? ":installed:" : ":other:") + root.stQuery
               onOrderChanged: Qt.callLater(function() { if (root.stIndex >= 0) stList.positionViewAtIndex(root.stIndex, ListView.Contain) })
               Component.onCompleted: if (root.stIndex > 0) positionViewAtIndex(root.stIndex, ListView.Center)
             }
@@ -1363,7 +1510,7 @@ Panel {
               anchors.right: stList.right
               anchors.top: stList.top
               textFormat: Text.PlainText
-              text: strings.t(root.stInstalled ? "steam.noneInstalled" : "steam.allInstalled")
+              text: strings.t(root.stQuery.trim() ? "steam.noMatch" : root.stInstalled ? "steam.noneInstalled" : "steam.allInstalled")
               color: root.dimFg
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -1376,9 +1523,9 @@ Panel {
               anchors.left: stList.right
               anchors.leftMargin: Style.space(16)
               anchors.right: parent.right
-              anchors.top: stList.top
+              anchors.top: stSearch.top
               anchors.bottom: stList.bottom
-              readonly property var game: root.stGame || ({ id: "", name: "", installed: false, size: 0, drive: -1, lastPlayed: 0, playtime: 0, cover: "" })
+              readonly property var game: root.stGame || ({ id: "", name: "", installed: false, size: 0, drive: -1, lastPlayed: 0, playtime: 0, cover: "", deck: "unknown", folder: "", launchOptions: "" })
 
               Cover {
                 id: stCover
@@ -1429,47 +1576,64 @@ Panel {
                   font.pixelSize: Style.font.caption
                   wrapMode: Text.WordWrap
                 }
-              }
 
-              Row {
-                id: stButtons
-                anchors.left: parent.left
-                anchors.top: stCover.bottom
-                anchors.topMargin: Style.space(14)
-                spacing: Style.spacing.sm
-
-                // By count, so a new reading doesn't rebuild the buttons.
-                Repeater {
-                  model: root.stActions.length
-
-                  Button {
-                    required property int index
-                    readonly property string action: root.stActions[index] || ""
-                    text: strings.t("steam.action." + action)
-                    iconText: action === "run" ? "" : action === "install" ? "" : ""
-                    selected: index === 0
-                    bordered: true
-                    foreground: root.fg
-                    fontFamily: root.fontFamily
-                    fontSize: Style.font.caption
-                    hasCursor: root.cursorOn("st-actions", index)
-                    onClicked: root.steamAction(action)
-                    onHovered: function(h) { if (h) root.point("st-actions", index) }
-                  }
+                Text {
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  text: strings.t("steam.deck").arg(strings.t("steam.deck." + stDetails.game.deck))
+                  color: root.deckColor(stDetails.game.deck)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
                 }
               }
 
-              Text {
+              Column {
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.top: stButtons.bottom
-                anchors.topMargin: Style.space(8)
-                textFormat: Text.PlainText
-                text: strings.t(stDetails.game.installed ? "steam.uninstallHint" : "steam.installHint")
-                color: root.dimFg
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                wrapMode: Text.WordWrap
+                anchors.top: stCover.bottom
+                anchors.topMargin: Style.space(14)
+                spacing: Style.space(8)
+
+                Row {
+                  spacing: Style.spacing.sm
+
+                  // By count, so a new reading doesn't rebuild the buttons.
+                  Repeater {
+                    model: root.stActions.length
+
+                    Button {
+                      required property int index
+                      readonly property string action: root.stActions[index] || ""
+                      readonly property bool iconOnly: action === "folder" || action === "options"
+                      readonly property color tint: root.actionColor(action)
+                      text: iconOnly ? "" : strings.t("steam.action." + action)
+                      tooltipText: !iconOnly ? ""
+                        : action === "options" && stDetails.game.launchOptions
+                          ? strings.t("steam.launchOptions").arg(stDetails.game.launchOptions)
+                          : strings.t("steam.action." + action)
+                      iconText: ({ run: "\uf04b", install: "\uf019", uninstall: "\uf1f8", folder: "\uf07b", options: "\uf120" })[action] || ""
+                      bordered: true
+                      foreground: tint
+                      accent: tint
+                      fontFamily: root.fontFamily
+                      fontSize: Style.font.caption
+                      hasCursor: root.cursorOn("st-actions", index)
+                      onClicked: root.steamAction(action)
+                      onHovered: function(h) { if (h) root.point("st-actions", index) }
+                    }
+                  }
+                }
+
+                Text {
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  text: strings.t(stDetails.game.installed ? "steam.uninstallHint" : "steam.installHint")
+                  color: root.dimFg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
               }
             }
 

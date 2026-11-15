@@ -251,8 +251,14 @@ def local_cover(root, appid, asset):
     return ""
 
 
+def deck_category(common):
+    """Steam Deck status: 0 unknown, 1 unsupported, 2 playable, 3 verified."""
+    value = as_int(child(common, "steam_deck_compatibility", "category"))
+    return value if 0 <= value <= 3 else 0
+
+
 def load_appinfo(root, wanted):
-    """{appid: (name, type, cover asset)} from appinfo.vdf (format 0x07564429 or
+    """{appid: (name, type, cover asset, Deck category)} from appinfo.vdf (format 0x07564429 or
     0x07564428), for the app ids in wanted only. A truncated or half-written
     file gives what was read before the damage."""
     buf = read_file(os.path.join(root, "appcache/appinfo.vdf"), MAX_BINARY)
@@ -283,7 +289,7 @@ def load_appinfo(root, wanted):
                     common = child(kv, "appinfo", "common") or child(kv, "common")
                     if common:
                         apps[appid] = (printable(child(common, "name")), str(child(common, "type")).lower(),
-                                       capsule_asset(common))
+                                       capsule_asset(common), deck_category(common))
                 except (ValueError, IndexError, struct.error):
                     pass
             pos += 8 + size
@@ -474,7 +480,7 @@ def current_user(root):
 
 
 def load_played(root, user):
-    """{appid: (last played, minutes played)} from localconfig.vdf."""
+    """{appid: (last played, minutes played, launch options)} from localconfig.vdf."""
     played = {}
     if not user:
         return played
@@ -482,11 +488,21 @@ def load_played(root, user):
     apps = child(config, "UserLocalConfigStore", "Software", "Valve", "Steam", "apps")
     for appid, info in (apps or {}).items():
         if APPID.match(appid) and isinstance(info, dict):
-            played[int(appid)] = (max(0, as_int(child(info, "LastPlayed"))), max(0, as_int(child(info, "Playtime"))))
+            played[int(appid)] = (max(0, as_int(child(info, "LastPlayed"))), max(0, as_int(child(info, "Playtime"))),
+                                  printable(child(info, "LaunchOptions"), 500))
     return played
 
 
 # ---- The library ------------------------------------------------------------
+
+def game_folder(library_path, installdir):
+    """steamapps/common/<installdir> when it is a plain folder name and exists, else ""."""
+    if (not isinstance(installdir, str) or not 0 < len(installdir) <= 255 or "/" in installdir
+            or installdir in (".", "..") or CONTROL.search(installdir)):
+        return ""
+    path = os.path.join(library_path, "steamapps/common", installdir)
+    return path if os.path.isdir(path) and not os.path.islink(path) else ""
+
 
 def installed_games(libs):
     found = {}
@@ -501,6 +517,7 @@ def installed_games(libs):
                 "name": printable(child(state, "name")),
                 "size": max(0, as_int(child(state, "SizeOnDisk"))),
                 "lastPlayed": max(0, as_int(child(state, "LastPlayed"))),
+                "folder": game_folder(lib["path"], child(state, "installdir")),
             }
     return found
 
@@ -519,11 +536,11 @@ def library(root):
     games = []
     for appid in sorted({a for a in owned if appid_is_game(appinfo, a)} | set(installed)):
         local = installed.get(appid)
-        info = appinfo.get(appid) or ("", "", "")
+        info = appinfo.get(appid) or ("", "", "", 0)
         name = info[0] or (local or {}).get("name", "")
         if not name:
             continue
-        last, minutes = played.get(appid, (0, 0))
+        last, minutes, options = played.get(appid, (0, 0, ""))
         if local and local["lastPlayed"] > last:
             last = local["lastPlayed"]
         games.append({
@@ -535,6 +552,9 @@ def library(root):
             "lastPlayed": last,
             "playtime": minutes,
             "cover": local_cover(root, appid, info[2]),
+            "deck": info[3],
+            "folder": local["folder"] if local else "",
+            "launchOptions": options,
         })
         if len(games) >= MAX_GAMES:
             break
