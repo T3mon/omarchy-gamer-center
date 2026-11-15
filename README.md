@@ -37,7 +37,9 @@ The page lists everything worth pausing: apps over 150 MB, each Docker Compose p
 - **The record** of what was paused lives in `~/.local/state/gamer-center/gamemode/` (private to you), so "Restore all" still works after a reboot.
 - A runtime-suspended NVIDIA GPU is never woken to read its VRAM.
 
-Turn game mode on before you launch the game, so the memory is free from the start.
+Turn game mode on before you launch the game, so the memory is free from the start. Or switch on **Turn on when a game opens**: game mode then pauses what's ticked when a game starts and brings it back 15 seconds after the game closes. A game counts when Steam launches it (its `reaper SteamLaunch` process), when a Windows `.exe` runs through Wine or Proton, or under gamescope; Steam sitting idle doesn't. If you restore things yourself mid-game, they stay back until that game ends, and game mode you turned on by hand is never turned off for you.
+
+Chromium-based browsers rewrite their command line into one string; it's split back into arguments when saved, so Brave and Chrome reopen.
 
 ## Commands
 

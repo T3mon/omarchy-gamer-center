@@ -37,6 +37,8 @@ Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how O
 - Ported from omarchy-gamemode 1.0.2 with its behavior kept. Our changes: state in `~/.local/state/gamer-center/gamemode/`, notifications as "Gamer Center", `nvidia-smi` skipped while the NVIDIA GPU is runtime-suspended, run as `python3 -I`.
 - `GameMode.qml` reads status every 20 s, every 3 s while the Game mode page is open (`watchers`), every 1 s while a switch runs. Switches run through `setsid -f` so they outlive a shell restart; a lock file in the state folder marks one in flight.
 - Item keys go back to the helper as single argv entries, after `validKey()`. Labels and details are stripped of control characters.
+- Automatic mode (our addition): `auto on|off` saves `"auto"` in `selection.json`; `detect` prints `{"game": name|null}` from comm and cmdline only (reaper SteamLaunch, a non-helper `.exe`, gamescope). `GameMode.qml` runs it every 3 s while auto is on, needs 2 readings in a row, runs `on --auto` (state `"auto": true`), and runs `off` 15 s after the game is gone only when the state has that mark. `gameHandled` stops it re-pausing after a manual restore mid-game.
+- `split_title()`: Chromium-based browsers put their whole command line in argv[0]; it's split when its first word is the program (`/proc/<pid>/exe`).
 - Tests must never run `on`, `off`, `pause` or `resume` for real: they close the user's apps and stop containers.
 
 ## Stats helper
@@ -74,6 +76,7 @@ omarchy plugin validate .
 - The Install MangoHud and Copy buttons.
 - Right-click on the bar icon.
 - Game mode's Pause and Restore on this machine (they would close the user's apps).
+- Automatic mode with a real game running.
 - Middle-click on the bar icon.
 
 ## Git

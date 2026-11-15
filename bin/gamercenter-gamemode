@@ -15,6 +15,9 @@ memory picture and one item per thing that can be paused, each an app
   off                   bring back everything that is paused
   pause <key>           pause one more item while game mode is on
   resume <key>          bring back one item; the last one turns game mode off
+  on --auto             as `on`, marked as started by a game, so the game's end turns it off
+  auto on|off           whether a game opening turns game mode on (Gamer Center's addition)
+  detect                print {"game": name} for a running game, or {"game": null}
 
 Apps are asked to quit (SIGTERM), never killed, and reopen the way they were
 launched, Chrome with its last session. Compose projects stop as a whole and
@@ -83,6 +86,14 @@ GAME_WORDS = ("steam", "heroic", "lutris", "wine", "proton", "gamescope", "bottl
 INTERPRETERS = {"bash", "sh", "dash", "zsh", "env"} | {f"python3.{n}" for n in range(8, 20)} | {"python3", "python", "node"}
 # Browsers started by test tools and agents (chrome-devtools-mcp, Playwright) are not the user's.
 FOREIGN_ARGS = ("--remote-debugging", "--headless", "--test-type", "--enable-automation")
+
+# Detecting a running game (for automatic mode). Steam marks every game it launches with a
+# `reaper SteamLaunch AppId=N` process; Wine, Proton, Lutris, Heroic and Bottles games run as
+# .exe processes; gamescope wraps a game. These Wine helpers run without a game, so don't count.
+WINE_HELPERS = {"explorer.exe", "services.exe", "winedevice.exe", "plugplay.exe", "svchost.exe",
+                "rpcss.exe", "conhost.exe", "start.exe", "wineboot.exe", "rundll32.exe", "tabtip.exe",
+                "iscriptevaluator.exe", "steam.exe", "steamwebhelper.exe", "regedit.exe", "msiexec.exe",
+                "winemenubuilder.exe", "cmd.exe", "mscorsvw.exe", "dxsetup.exe"}
 
 APP_GRACE = 25       # seconds an app gets to save and quit
 STOP_GRACE = 20      # seconds `docker stop` gives a container before it kills it
@@ -279,6 +290,7 @@ def processes():
                 p.exe = os.path.basename(p.path)
             except OSError:
                 p.path, p.exe = "", p.comm
+            p.argv = split_title(p.argv, p.path)
             p.kb = 0
             with open(f"/proc/{d}/status") as f:
                 for line in f:
@@ -288,6 +300,17 @@ def processes():
             continue
         out[p.pid] = p
     return out
+
+
+def split_title(argv, path):
+    """Chromium-based browsers (Brave, Chrome) rewrite their command line into one string
+    with spaces. Reopening runs it, so split it back when its first word is the program."""
+    if len(argv) != 1 or " " not in argv[0] or not path:
+        return argv
+    words = argv[0].split(" ")
+    if words[0] == path or os.path.realpath(words[0]) == os.path.realpath(path):
+        return [w for w in words if w]
+    return argv
 
 
 def tree(root, children):
@@ -398,6 +421,38 @@ def reopen(item):
     except OSError as e:
         return f"{item['label']}: {e}"
     return None
+
+
+def find_game(root="/proc"):
+    """The name of a running game of this account, or None. Reads only names and command
+    lines, so it's cheap enough to run every few seconds."""
+    me = os.getuid()
+    found = None
+    for d in os.listdir(root):
+        if not d.isdigit():
+            continue
+        base = os.path.join(root, d)
+        try:
+            if os.stat(base).st_uid != me:
+                continue
+            with open(os.path.join(base, "comm")) as f:
+                comm = f.read().strip()
+            with open(os.path.join(base, "cmdline"), "rb") as f:
+                argv = [a.decode(errors="replace") for a in f.read().split(b"\0") if a]
+        except OSError:
+            continue
+        if not argv:
+            continue
+        if comm == "reaper" and "SteamLaunch" in argv:
+            app = next((a[6:] for a in argv if a.startswith("AppId=")), "")
+            return "Steam game " + app if app else "Steam game"
+        prog = re.split(r"[\\/]", argv[0])[-1]
+        for name in (comm, prog):
+            if name.lower().endswith(".exe") and name.lower() not in WINE_HELPERS:
+                found = found or name
+        if comm == "gamescope" or comm == "gamescope-wl":
+            found = found or "gamescope"
+    return found
 
 
 # ---------------------------------------------------------------- docker
@@ -788,6 +843,7 @@ def status():
     prefs = read_prefs()
     gpu = Gpu()
     out = {"on": bool(state), "busy": busy(), "mem": meminfo(), "items": [],
+           "auto": prefs.get("auto") is True, "autoOn": bool(state) and state.get("auto") is True,
            "gpu": {"usedMB": gpu.used, "totalMB": gpu.total} if gpu.total else None}
     paused_keys = set()
     if state:
@@ -843,15 +899,16 @@ def resume_records(records):
     return problems
 
 
-def cmd_on():
+def cmd_on(auto=False):
     if read_state():
         return
     prefs = read_prefs()
     items = [i for i in discover() if selected(i["key"], prefs)]
     if not items:
-        notify("Game mode", "Nothing is ticked, so there's nothing to pause.")
+        if not auto:
+            notify("Game mode", "Nothing is ticked, so there's nothing to pause.")
         return
-    state = {"since": int(time.time()), "items": [], "freedMB": 0, "freedVramMB": 0}
+    state = {"since": int(time.time()), "items": [], "freedMB": 0, "freedVramMB": 0, "auto": auto}
     freed, after, vfreed, problems = pause_items(items, state)
     body = (f"Paused {', '.join(i['label'] for i in items)}\nFreed {gb(max(0, freed))} RAM"
             + (f" and {size(vfreed)} VRAM" if vfreed is not None else "") + f" · {gb(after)} RAM free now")
@@ -919,7 +976,15 @@ def main():
     if cmd == "select" and len(args) == 3 and args[2] in ("on", "off"):
         cmd_select(args[1], args[2] == "on")
         return
-    if cmd not in ("on", "off", "toggle", "pause", "resume") or (cmd in ("pause", "resume") and len(args) != 2):
+    if cmd == "auto" and len(args) == 2 and args[1] in ("on", "off"):
+        cmd_select("auto", args[1] == "on")
+        return
+    if cmd == "detect" and len(args) == 1:
+        print(json.dumps({"game": find_game()}))
+        return
+    auto = cmd == "on" and args[1:] == ["--auto"]
+    if cmd not in ("on", "off", "toggle", "pause", "resume") or (cmd in ("pause", "resume") and len(args) != 2) \
+            or (cmd in ("off", "toggle") and len(args) != 1) or (cmd == "on" and len(args) != 1 and not auto):
         print(__doc__, file=sys.stderr)
         sys.exit(2)
     held = lock(False)
@@ -930,7 +995,7 @@ def main():
         if cmd == "toggle":
             cmd = "off" if read_state() else "on"
         if cmd == "on":
-            cmd_on()
+            cmd_on(auto)
         elif cmd == "off":
             cmd_off()
         elif cmd == "pause":

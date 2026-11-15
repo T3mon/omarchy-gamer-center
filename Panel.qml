@@ -277,7 +277,7 @@ Panel {
   readonly property var navRows: {
     var list = [{ id: "page", count: 2 }]
     if (page === "gamemode") {
-      list.push({ id: "gm-power", count: 1 })
+      list.push({ id: "gm-power", count: 1 }, { id: "gm-auto", count: 1 })
       for (var g = 0; g < gmItems.length; g++) list.push({ id: "gm-item-" + g, count: 1 })
       return list
     }
@@ -360,6 +360,7 @@ Panel {
     var col = cursorCol
     if (id === "page") setPage(col === 0 ? "stats" : "gamemode")
     else if (id === "gm-power") toggleGameMode()
+    else if (id === "gm-auto") { if (gm) gm.setAuto(!gm.autoEnabled) }
     else if (id.indexOf("gm-item-") === 0) { if (gm) gm.clickItem(gmItems[Number(id.slice(8))]) }
     else if (id === "enabled") service.setEnabled(!config.enabled)
     else if (id.indexOf("fold-") === 0) toggleFold(id)
@@ -941,6 +942,20 @@ Panel {
                 onClicked: root.toggleGameMode()
                 onHovered: function(h) { if (h) root.point("gm-power", 0) }
               }
+            }
+
+            SmallToggle {
+              id: gmAuto
+              width: parent.width
+              label: strings.t("gm.auto")
+              description: root.gm && root.gm.autoEnabled && root.gm.game !== ""
+                ? strings.t("gm.autoPlaying").arg(root.gm.game) : strings.t("gm.autoHint")
+              checked: !!root.gm && root.gm.autoEnabled
+              hasCursor: root.cursorOn("gm-auto")
+              onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(gmAuto)
+              foreground: root.fg
+              onClicked: if (root.gm) root.gm.setAuto(!root.gm.autoEnabled)
+              onHovered: function(h) { if (h) root.point("gm-auto", 0) }
             }
 
             PanelSeparator { foreground: root.fg }

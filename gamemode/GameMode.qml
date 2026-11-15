@@ -87,6 +87,8 @@ Item {
       ? { usedMB: count(data.gpu.usedMB), totalMB: count(data.gpu.totalMB) } : null
     return {
       on: data.on === true,
+      auto: data.auto === true,
+      autoOn: data.autoOn === true,
       busy: data.busy === true,
       since: count(data.since),
       freedMB: count(data.freedMB),
@@ -118,6 +120,76 @@ Item {
     }
     itemPending = left
     if (!selectProc.running) selectPending = ({})
+  }
+
+  // ------------------------------------------------------------ automatic
+  //
+  // With the switch on, a game opening turns game mode on (marked --auto), and
+  // the game closing turns it off again, but only if a game turned it on. A
+  // game is handled once: restoring by hand mid-game sticks until it ends.
+
+  property var autoPending: null   // true/false while `auto on|off` is being saved
+  readonly property bool autoEnabled: autoPending !== null ? autoPending : !!status && status.auto
+  property string game: ""         // the running game's name, "" when none
+  property int gameSeen: 0         // readings in a row that saw a game
+  property double gameLastSeen: 0
+  property bool gameHandled: false
+  readonly property int gameEndGrace: 15000
+
+  function setAuto(on) {
+    autoPending = on === true
+    autoProc.command = ["python3", "-I", root.helper, "auto", autoPending ? "on" : "off"]
+    autoProc.running = true
+  }
+
+  function takeDetect(raw) {
+    var name = null
+    try { var d = JSON.parse(String(raw || "")); name = d && typeof d.game === "string" ? d.game : null } catch (e) { name = null }
+    game = name ? text(name, 80) : ""
+    if (!autoEnabled) { gameSeen = 0; gameHandled = false; return }
+    if (!status) return
+    if (game !== "") {
+      gameSeen++
+      gameLastSeen = Date.now()
+      // Two readings in a row, so a short-lived installer .exe doesn't count.
+      if (gameSeen >= 2 && !gameHandled) {
+        gameHandled = true
+        if (!gameOn && !working && tickedCount > 0) {
+          pending = "on"
+          launch(["on", "--auto"])
+        }
+      }
+      return
+    }
+    gameSeen = 0
+    if (!gameHandled || Date.now() - gameLastSeen < gameEndGrace) return
+    gameHandled = false
+    if (status.on && status.autoOn && !working) {
+      pending = "off"
+      launch(["off"])
+    }
+  }
+
+  Process {
+    id: autoProc
+    onExited: { root.autoPending = null; root.refresh() }
+  }
+
+  Process {
+    id: detectProc
+    command: ["python3", "-I", root.helper, "detect"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.takeDetect(text)
+    }
+  }
+
+  Timer {
+    interval: 3000
+    running: root.autoEnabled
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: if (!detectProc.running) detectProc.running = true
   }
 
   // ------------------------------------------------------------ switching

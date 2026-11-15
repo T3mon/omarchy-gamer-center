@@ -99,5 +99,8 @@
   "gm.barOff": "Game mode off",
   "gm.barWorking": "Game mode: working…",
   "gm.middleOn": "Middle-click to turn game mode on",
-  "gm.middleOff": "Middle-click to turn game mode off"
+  "gm.middleOff": "Middle-click to turn game mode off",
+  "gm.auto": "Turn on when a game opens",
+  "gm.autoHint": "Pauses what's ticked when a game opens and brings it back 15 s after it closes",
+  "gm.autoPlaying": "Playing %1"
 }

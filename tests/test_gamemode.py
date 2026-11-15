@@ -174,6 +174,57 @@ class GameModeTest(unittest.TestCase):
         self.assertEqual(found["chrome"]["mb"], 1000)
         self.assertEqual(found["chrome"]["pids"], [20])
 
+    def test_rewritten_browser_command_line_is_split_back(self):
+        gm = self.gm
+        one = ["/opt/brave-bin/brave --ozone-platform=wayland --load-extension=/a,/b --no-default-browser-check"]
+        self.assertEqual(gm.split_title(one, "/opt/brave-bin/brave"),
+                         ["/opt/brave-bin/brave", "--ozone-platform=wayland", "--load-extension=/a,/b",
+                          "--no-default-browser-check"])
+        # Left alone: a normal argv, a first word that isn't the program, an unreadable program.
+        self.assertEqual(gm.split_title(["/usr/bin/slack", "--x"], "/usr/bin/slack"), ["/usr/bin/slack", "--x"])
+        self.assertEqual(gm.split_title(["/bin/sh -c evil"], "/opt/brave-bin/brave"), ["/bin/sh -c evil"])
+        self.assertEqual(gm.split_title(["/opt/brave-bin/brave --x"], ""), ["/opt/brave-bin/brave --x"])
+
+    def test_games_are_detected(self):
+        def tree(*procs):
+            root = Path(tempfile.mkdtemp(dir=self.tmp))
+            for pid, comm, argv in procs:
+                d = root / str(pid)
+                d.mkdir()
+                (d / "comm").write_text(comm + "\n")
+                (d / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
+            return str(root)
+        steam_idle = [(1, "steam", ["/home/u/.local/share/Steam/steamrt64/steam", "-srt-logger-opened"]),
+                      (2, "steamwebhelper", ["./steamwebhelper", "-nocrashdialog"]),
+                      (3, "bash", ["bash", "/home/u/.local/share/Steam/steam.sh"])]
+        self.assertIsNone(self.gm.find_game(tree(*steam_idle)))
+        wine_idle = [(4, "wineserver", ["/usr/bin/wineserver"]), (5, "explorer.exe", ["C:\\windows\\explorer.exe"]),
+                     (6, "services.exe", ["C:\\windows\\system32\\services.exe"])]
+        self.assertIsNone(self.gm.find_game(tree(*wine_idle)))
+        self.assertEqual(self.gm.find_game(tree(*steam_idle, (7, "reaper", ["reaper", "SteamLaunch", "AppId=1172470", "--", "/x"]))),
+                         "Steam game 1172470")
+        self.assertEqual(self.gm.find_game(tree(*wine_idle, (8, "SongsOfSyx.exe", ["Z:\\games\\SongsOfSyx.exe"]))),
+                         "SongsOfSyx.exe")
+        # comm is cut at 15 characters; the command line still has the whole name.
+        self.assertEqual(self.gm.find_game(tree((9, "LongGameNameHer", ["C:\\g\\LongGameNameHere.exe"]))),
+                         "LongGameNameHere.exe")
+        self.assertEqual(self.gm.find_game(tree((10, "gamescope", ["gamescope", "--", "game"]))), "gamescope")
+
+    def test_auto_switch_is_remembered_and_marked(self):
+        env = dict(os.environ, XDG_STATE_HOME=str(self.tmp))
+        r = subprocess.run([sys.executable, "-I", str(SCRIPT), "auto", "on"], env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.gm.read_prefs(), {"auto": True})
+        for bad in (["auto", "maybe"], ["on", "--evil"], ["off", "x"], ["detect", "x"]):
+            r = subprocess.run([sys.executable, "-I", str(SCRIPT), *bad], env=env, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2, bad)
+        notes = []
+        self.gm.discover = lambda gpu=None: []
+        self.gm.notify = lambda *a, **kw: notes.append(a)
+        self.gm.cmd_on(auto=True)  # nothing ticked: stays quiet when a game started it
+        self.assertEqual(notes, [])
+        self.assertIsNone(self.gm.read_state())
+
     def test_browser_with_the_claude_extension_bridge_is_offered(self):
         gm = self.gm
         ps = [
