@@ -411,6 +411,7 @@ def reopen(item):
         return f"{item['label']} wasn't reopened (an older Game mode saved it): start it yourself"
     if item["name"] in apps(processes()):
         return None
+    before = {c["address"] for c in clients()}
     argv = list(item["argv"])
     for flag in RESTORE_FLAGS.get(item["name"], []):
         if flag not in argv:
@@ -420,7 +421,94 @@ def reopen(item):
                          stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError as e:
         return f"{item['label']}: {e}"
+    if item.get("windows"):
+        t = threading.Thread(target=place_windows, args=(item["windows"], before), daemon=True)
+        t.start()
+        PLACERS.append(t)
     return None
+
+
+# ---------------------------------------------------------------- workspaces
+#
+# Gamer Center's addition: an app reopens on the workspaces its windows were on.
+
+PLACE_WAIT = 30      # seconds to wait for a reopened app's windows
+PLACERS = []         # threads still moving windows; joined before the notification
+WORKSPACE_NAME = re.compile(r"^[A-Za-z0-9_:.-]{1,40}$")
+ADDRESS = re.compile(r"^0x[0-9a-fA-F]{1,16}$")
+
+
+def clients():
+    """Hyprland's windows: [{address, pid, class, title, workspace}], [] without Hyprland."""
+    if not shutil.which("hyprctl"):
+        return []
+    r = run("hyprctl", "clients", "-j", timeout=5)
+    try:
+        data = json.loads(r.stdout) if r is not None and r.returncode == 0 else []
+    except ValueError:
+        return []
+    out = []
+    for c in data if isinstance(data, list) else []:
+        ws = c.get("workspace") or {}
+        name = str(ws.get("name", ""))
+        if not isinstance(c.get("address"), str) or not ADDRESS.match(c["address"]):
+            continue
+        out.append({"address": c["address"], "pid": c.get("pid"), "class": str(c.get("class", "")),
+                    "title": str(c.get("title", "")),
+                    "workspace": name if WORKSPACE_NAME.match(name) else None})
+    return out
+
+
+def windows_of(pids, found=None):
+    """Where an app's windows are: [{class, title, workspace}]."""
+    pids = set(pids)
+    found = clients() if found is None else found
+    return [{"class": c["class"], "title": c["title"], "workspace": c["workspace"]}
+            for c in found if c["pid"] in pids and c["workspace"]]
+
+
+def plan_moves(saved, new):
+    """address → workspace for an app's new windows: the saved window with the same title
+    first, then the workspace most of its windows were on."""
+    saved = [w for w in saved if isinstance(w, dict) and isinstance(w.get("workspace"), str)
+             and WORKSPACE_NAME.match(w["workspace"])]
+    if not saved:
+        return {}
+    counts = {}
+    for w in saved:
+        counts[w["workspace"]] = counts.get(w["workspace"], 0) + 1
+    usual = max(counts, key=counts.get)
+    classes = {w.get("class") for w in saved}
+    left = list(saved)
+    moves = {}
+    for c in new:
+        if c["class"] not in classes:
+            continue
+        match = next((w for w in left if w.get("title") == c["title"]), None)
+        if match:
+            left.remove(match)
+        moves[c["address"]] = match["workspace"] if match else usual
+    return moves
+
+
+def move_window(address, workspace):
+    if not ADDRESS.match(address) or not WORKSPACE_NAME.match(workspace):
+        return
+    lua = 'hl.dsp.window.move({ workspace = "%s", follow = false, window = "address:%s" })' % (workspace, address)
+    run("hyprctl", "dispatch", lua, timeout=5)
+
+
+def place_windows(saved, before):
+    """Move a reopened app's windows back as they appear. Browsers restore their windows
+    one by one, so keep watching until as many came back as there were, or time runs out."""
+    done = set()
+    deadline = time.time() + PLACE_WAIT
+    while time.time() < deadline and len(done) < len(saved):
+        time.sleep(0.5)
+        new = [c for c in clients() if c["address"] not in before and c["address"] not in done]
+        for address, workspace in plan_moves(saved, new).items():
+            move_window(address, workspace)
+            done.add(address)
 
 
 def find_game(root="/proc"):
@@ -759,7 +847,8 @@ def discover(gpu=None):
     items = []
     for name, a in apps(processes()).items():
         items.append({"key": "app:" + name, "kind": "app", "name": name, "label": LABELS.get(name, name.capitalize()),
-                      "mb": a["mb"], "vram": gpu.of(a["members"]), "pids": a["pids"], "argv": a["argv"]})
+                      "mb": a["mb"], "vram": gpu.of(a["members"]), "pids": a["pids"], "argv": a["argv"],
+                      "members": a["members"]})
     projects = {}
     for c in containers():
         projects.setdefault(c["project"], []).append(c)
@@ -797,7 +886,8 @@ def pause(item):
     kind = item["kind"]
     record = {k: item[k] for k in ("key", "kind", "label")}
     if kind == "app":
-        record.update(name=item["name"], argv=item["argv"], format=RECORD_FORMAT)
+        record.update(name=item["name"], argv=item["argv"], format=RECORD_FORMAT,
+                      windows=windows_of(item.get("members", item["pids"])))
         for pid in item["pids"]:
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -882,7 +972,8 @@ def pause_items(items, state):
 
 
 def resume_records(records):
-    """Apps first so the browser is back quickly; projects in parallel."""
+    """Apps first so the browser is back quickly; projects in parallel. Waits for reopened
+    apps' windows to be moved back to their workspaces."""
     problems = []
     for r in records:
         if r["kind"] != "docker":
@@ -896,6 +987,8 @@ def resume_records(records):
         t.join()
     for p in results.values():
         problems += p
+    while PLACERS:
+        PLACERS.pop().join()
     return problems
 
 

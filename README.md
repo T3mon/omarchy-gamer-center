@@ -31,7 +31,7 @@ Ported from [omarchy-gamemode](https://github.com/YassineSawahi/omarchy-gamemode
 
 The page lists everything worth pausing: apps over 150 MB, each Docker Compose project, and the file indexer. Each row shows the RAM (plus swap) and VRAM it holds. Tick what you want gone and press **Pause ticked**. Chrome, Chromium, Slack, Discord, the indexer and Compose projects start ticked, and your ticks are remembered. While game mode is on, each switch acts at once: switch one off to bring just that back, or on to pause one more. **Restore all** brings everything back.
 
-- **Apps** get SIGTERM, so they can save and quit; nothing is killed. They reopen with their original command line, and Chrome and Chromium come back with their last session.
+- **Apps** get SIGTERM, so they can save and quit; nothing is killed. They reopen with their original command line, on the workspaces their windows were on, and Chrome, Chromium and Brave come back with their last session.
 - **Containers** stop with `docker stop` and start again dependencies first, waiting for healthchecks.
 - **Never touched:** terminals and anything running an AI coding agent, game launchers and games (Steam, Proton, Wine, Lutris, Heroic, gamescope, any `.exe`), browsers started by automation tools, the desktop itself, sandboxed apps, and other accounts' processes.
 - **The record** of what was paused lives in `~/.local/state/gamer-center/gamemode/` (private to you), so "Restore all" still works after a reboot.

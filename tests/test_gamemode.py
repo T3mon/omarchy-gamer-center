@@ -185,6 +185,30 @@ class GameModeTest(unittest.TestCase):
         self.assertEqual(gm.split_title(["/bin/sh -c evil"], "/opt/brave-bin/brave"), ["/bin/sh -c evil"])
         self.assertEqual(gm.split_title(["/opt/brave-bin/brave --x"], ""), ["/opt/brave-bin/brave --x"])
 
+    def test_windows_go_back_to_their_workspaces(self):
+        gm = self.gm
+        found = [{"address": "0x1", "pid": 20, "class": "brave-browser", "title": "Docs - Brave", "workspace": "1"},
+                 {"address": "0x2", "pid": 20, "class": "brave-browser", "title": "Mail - Brave", "workspace": "5"},
+                 {"address": "0x3", "pid": 30, "class": "foot", "title": "foot", "workspace": "3"}]
+        saved = gm.windows_of([20, 21], found)
+        self.assertEqual(saved, [{"class": "brave-browser", "title": "Docs - Brave", "workspace": "1"},
+                                 {"class": "brave-browser", "title": "Mail - Brave", "workspace": "5"}])
+        new = [{"address": "0xa", "class": "brave-browser", "title": "Mail - Brave"},
+               {"address": "0xb", "class": "brave-browser", "title": "New Tab - Brave"},
+               {"address": "0xc", "class": "foot", "title": "foot"}]
+        # Same title goes where it was; an unknown one goes to the first most-used workspace; others stay.
+        self.assertEqual(gm.plan_moves(saved, new), {"0xa": "5", "0xb": "1"})
+        # A workspace name that could break out of the Lua string is never used.
+        self.assertEqual(gm.plan_moves([{"class": "x", "title": "", "workspace": '1" }) os.exit('}],
+                                       [{"address": "0x9", "class": "x", "title": ""}]), {})
+        moved = []
+        gm.run = lambda *cmd, **kw: moved.append(cmd)
+        gm.move_window("0xa", "special:magic")
+        gm.move_window("0xa; rm", "1")
+        gm.move_window("0xa", "1\" })")
+        self.assertEqual(moved, [("hyprctl", "dispatch",
+                                  'hl.dsp.window.move({ workspace = "special:magic", follow = false, window = "address:0xa" })')])
+
     def test_games_are_detected(self):
         def tree(*procs):
             root = Path(tempfile.mkdtemp(dir=self.tmp))
