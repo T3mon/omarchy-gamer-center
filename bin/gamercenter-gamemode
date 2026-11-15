@@ -70,11 +70,6 @@ RESTORE_FLAGS = {"chrome": ["--restore-last-session"], "chromium": ["--restore-l
 # Chromium-based browsers: the first window's process holds the command line, and an app
 # window (--app=URL, as Omarchy's web apps open) or a URL there would replace the session restore.
 BROWSERS = set(RESTORE_FLAGS)
-# A user service an app runs in, as its cgroup names it. Such an app is stopped and started
-# through systemd, which would otherwise start it again as soon as it quits.
-USER_UNIT = re.compile(r"^0::/user\.slice/user-\d+\.slice/user@\d+\.service/(?:[A-Za-z0-9_.@-]+\.slice/)*"
-                       r"([A-Za-z0-9_.@-]{1,100}\.service)$")
-UNIT_NAME = re.compile(r"^[A-Za-z0-9_.@-]{1,100}\.service$")
 # Marks app records saved since 1.0.2. Older versions trusted a parent by its process name, so
 # a sandboxed process could get its command line saved; an app record without this never runs.
 RECORD_FORMAT = 2
@@ -163,10 +158,8 @@ def valid_record(r):
     kind = r.get("kind")
     if kind == "app":
         argv = r.get("argv")
-        unit = r.get("unit")
         return isinstance(r.get("name"), str) and isinstance(argv, list) and bool(argv) \
-            and all(isinstance(a, str) for a in argv) \
-            and (unit is None or (isinstance(unit, str) and bool(UNIT_NAME.match(unit))))
+            and all(isinstance(a, str) for a in argv)
     if kind == "docker":
         cs = r.get("containers")
         return isinstance(cs, list) and all(isinstance(c, dict) and isinstance(c.get("id"), str)
@@ -363,30 +356,15 @@ def user_manager():
         return 0
 
 
-def service_unit(pid):
-    """The user service a process runs in, when systemd keeps that service in a unit file (so
-    `start` brings it back). Apps launched into scopes or transient units give None."""
-    try:
-        with open(f"/proc/{pid}/cgroup") as f:
-            m = USER_UNIT.match(f.read().strip())
-    except OSError:
-        return None
-    if not m or m.group(1) == INDEXER:
-        return None
-    r = run("systemctl", "--user", "show", m.group(1), "-p", "FragmentPath", "--value", timeout=5)
-    return m.group(1) if r is not None and r.returncode == 0 and r.stdout.strip() else None
-
-
-def apps(procs, manager=None, own=None, unit_of=None):
+def apps(procs, manager=None, own=None):
     """name → {pids, members, argv, mb}: top-level apps of this session (children of the
     user's service manager or of Hyprland) worth listing and safe to close.
 
     An app's command line is run again on restore, outside any sandbox it came from, so only
     processes in this session's own namespaces count, both as apps and as the Hyprland they
     hang off; a sandboxed process can call itself anything. The service manager is known by
-    its PID. `manager`, `own` and `unit_of` are for tests."""
+    its PID. `manager` and `own` are for tests."""
     manager = user_manager() if manager is None else manager
-    unit_of = service_unit if unit_of is None else unit_of
     own = namespaces("self") if own is None else own
 
     def ours(p):
@@ -414,8 +392,6 @@ def apps(procs, manager=None, own=None, unit_of=None):
         a["pids"].append(p.pid)
         a["members"] += [m.pid for m in members]
         a["mb"] += sum(m.kb for m in members) // 1024
-        if p.ppid == manager and not a.get("unit"):
-            a["unit"] = unit_of(p.pid)
     return {k: v for k, v in found.items() if v["mb"] >= MIN_MB}
 
 
@@ -439,16 +415,11 @@ def reopen(item):
     if item["name"] in apps(processes()):
         return None
     before = {c["address"] for c in clients()}
-    if item.get("unit"):
-        r = run("systemctl", "--user", "start", item["unit"], timeout=30)
-        if r is None or r.returncode != 0:
-            return f"{item['label']} didn't come back ({item['unit']})"
-    else:
-        try:
-            subprocess.Popen(launcher() + reopen_argv(item), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
-        except OSError as e:
-            return f"{item['label']}: {e}"
+    try:
+        subprocess.Popen(launcher() + reopen_argv(item), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError as e:
+        return f"{item['label']}: {e}"
     if item.get("windows"):
         t = threading.Thread(target=place_windows, args=(item["windows"], before), daemon=True)
         t.start()
@@ -889,7 +860,7 @@ def discover(gpu=None):
     for name, a in apps(processes()).items():
         items.append({"key": "app:" + name, "kind": "app", "name": name, "label": LABELS.get(name, name.capitalize()),
                       "mb": a["mb"], "vram": gpu.of(a["members"]), "pids": a["pids"], "argv": a["argv"],
-                      "members": a["members"], "unit": a.get("unit")})
+                      "members": a["members"]})
     projects = {}
     for c in containers():
         projects.setdefault(c["project"], []).append(c)
@@ -929,11 +900,6 @@ def pause(item):
     if kind == "app":
         record.update(name=item["name"], argv=item["argv"], format=RECORD_FORMAT,
                       windows=windows_of(item.get("members", item["pids"])))
-        unit = item.get("unit")
-        if unit and UNIT_NAME.match(unit):
-            # Stopped through systemd, or it would start the app again right away.
-            record["unit"] = unit
-            run("systemctl", "--user", "stop", unit, timeout=APP_GRACE + 5)
         for pid in item["pids"]:
             try:
                 os.kill(pid, signal.SIGTERM)

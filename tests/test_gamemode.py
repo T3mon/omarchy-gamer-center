@@ -276,30 +276,6 @@ class GameModeTest(unittest.TestCase):
         other = {"name": "obsidian", "argv": ["/usr/bin/obsidian", "file.md"]}
         self.assertEqual(self.gm.reopen_argv(other), ["/usr/bin/obsidian", "file.md"])
 
-    def test_apps_in_a_user_service_are_stopped_and_started_through_it(self):
-        """systemd would start them again as soon as they quit (Geary's background service)."""
-        gm = self.gm
-        ps = [proc(gm, 10, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"]),
-              proc(gm, 20, 10, "geary", ["/home/u/.local/bin/geary", "--gapplication-service"], mb=200)]
-        found = gm.apps({p.pid: p for p in ps}, manager=10, own=OWN,
-                        unit_of=lambda pid: "geary-background.service" if pid == 20 else None)
-        self.assertEqual(found["geary"]["unit"], "geary-background.service")
-        ran = []
-        gm.run = lambda *cmd, timeout=30: ran.append(list(cmd)) or subprocess.CompletedProcess(cmd, 0, "", "")
-        gm.clients = lambda: []
-        gm.apps = lambda procs: {}
-        item = {"key": "app:geary", "kind": "app", "label": "Geary", "name": "geary", "pids": [],
-                "argv": found["geary"]["argv"], "unit": "geary-background.service"}
-        record, wait = gm.pause(item)
-        self.assertEqual(wait(), [])
-        self.assertEqual(record["unit"], "geary-background.service")
-        self.assertTrue(gm.valid_record(record))
-        with mock.patch.object(gm.subprocess, "Popen", lambda *a, **kw: self.fail("launched directly")):
-            self.assertIsNone(gm.reopen(record))
-        self.assertIn(["systemctl", "--user", "stop", "geary-background.service"], ran)
-        self.assertIn(["systemctl", "--user", "start", "geary-background.service"], ran)
-        self.assertFalse(gm.valid_record(dict(record, unit="x.service; rm -rf ~")))
-
     def test_sandboxed_processes_are_never_offered(self):
         """Their command line would be run on restore, outside the sandbox."""
         gm = self.gm
