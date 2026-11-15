@@ -1,11 +1,11 @@
 {
-  "bar.tooltip": "Game overlay",
-  "bar.tooltipOn": "Game overlay: on",
+  "bar.tooltip": "Gamer Center",
+  "bar.tooltipOn": "Gamer Center · overlay on",
 
-  "panel.title": "Game Overlay",
+  "panel.title": "Gamer Center",
   "status.starting": "Starting…",
-  "status.off": "Off",
-  "status.on": "On · %1",
+  "status.off": "Overlay off",
+  "status.on": "Overlay on · %1",
   "status.waiting": "Waiting for a fullscreen window",
   "status.failed": "Stats helper stopped",
 

@@ -18,7 +18,7 @@ def load(name, path):
     return module
 
 
-stats = load("gameoverlay_stats", os.path.join(HERE, "..", "bin", "gameoverlay-stats"))
+stats = load("gamercenter_stats", os.path.join(HERE, "..", "bin", "gamercenter-stats"))
 
 
 class Tree:

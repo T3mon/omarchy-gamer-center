@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "id": "t3mon.gameoverlay",
-  "name": "Game Overlay",
+  "id": "t3mon.gamercenter",
+  "name": "Gamer Center",
   "version": "1.0.0",
   "author": "T3mon",
-  "description": "A stats overlay for games, with a MangoHud FPS switch",
+  "description": "Game tools: a stats overlay and a MangoHud FPS switch",
   "kinds": [
     "service",
     "bar-widget"
@@ -14,8 +14,8 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "Game Overlay",
-    "description": "Stats overlay for games",
+    "displayName": "Gamer Center",
+    "description": "Game stats overlay and FPS switch",
     "category": "Games",
     "allowMultiple": false,
     "defaultSection": "right"

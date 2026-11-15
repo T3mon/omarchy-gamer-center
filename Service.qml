@@ -7,7 +7,7 @@ import qs.Commons as Commons
 import "overlay"
 import "overlay/Metrics.js" as Metrics
 
-// Owns the Game Overlay: its settings file, the stats helper, the HUD windows
+// Owns the Gamer Center overlay: its settings file, the stats helper, the HUD windows
 // and the MangoHud block. The bar panel only reads from here and calls in.
 Item {
   id: root
@@ -17,10 +17,10 @@ Item {
   property var manifest: null
 
   readonly property string pluginDir: decodeURIComponent(String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "")).replace(/\/+$/, "")
-  readonly property string statsHelper: pluginDir + "/bin/gameoverlay-stats"
-  readonly property string mangoHelper: pluginDir + "/bin/gameoverlay-mangohud"
-  readonly property string configDir: (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/game-overlay"
-  readonly property string configPath: configDir + "/config.json"
+  readonly property string statsHelper: pluginDir + "/bin/gamercenter-stats"
+  readonly property string mangoHelper: pluginDir + "/bin/gamercenter-mangohud"
+  readonly property string configDir: (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/gamer-center"
+  readonly property string configPath: configDir + "/overlay.json"
 
   property var config: Metrics.sanitize(null)
   property bool configReady: false
@@ -376,7 +376,7 @@ Item {
   }
 
   ShellIpc {
-    target: "gameoverlay"
+    target: "gamercenter"
 
     function toggle(): string {
       if (!root.configReady) return "not ready"

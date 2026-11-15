@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Stream system stats for the Game Overlay plugin, one JSON object per line.
+"""Stream system stats for the Gamer Center plugin, one JSON object per line.
 
 Reads /proc and /sys only, plus NVML (or nvidia-smi) for NVIDIA GPUs that are awake.
 Needs no root. Exits when stdout closes or the parent process goes away.
 
-  gameoverlay-stats [--interval SECONDS] [--gpu auto|PCI-SLOT] [--once]
+  gamercenter-stats [--interval SECONDS] [--gpu auto|PCI-SLOT] [--once]
 
 --root points every /proc and /sys read at a fixture tree (used by the tests).
 """

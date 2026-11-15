@@ -1,20 +1,20 @@
-# Game Overlay
+# Gamer Center
 
-An Omarchy shell plugin that puts a small stats HUD over your games: CPU and GPU load, temperature and clock, GPU power, RAM, VRAM, battery draw and the time. It can also switch on MangoHud's in-game FPS counter.
+Game tools for the Omarchy shell. For now that's a stats HUD over your games (CPU and GPU load, temperature and clock, GPU power, RAM, VRAM, battery draw and the time) and a switch for MangoHud's in-game FPS counter.
 
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/T3mon/omarchy-game-overlay --enable
+omarchy plugin add https://github.com/T3mon/omarchy-gamer-center --enable
 ```
 
-It shows up in the bar as a gamepad icon. Left-click opens the panel, right-click turns the HUD on or off.
+It shows up in the bar as a gamepad icon. Left-click opens the panel, right-click turns the overlay on or off.
 
-## Settings
+## Overlay
 
 The panel has a live preview. Click where the HUD should sit, pick the stats, a stacked or one-line layout, the size and the backdrop. Under Behavior you can keep it hidden until a window goes fullscreen, change the update rate, and pin a GPU or a display when you have more than one.
 
-Settings are saved in `~/.config/game-overlay/config.json`. Edits to that file apply right away.
+Settings are saved in `~/.config/gamer-center/overlay.json`. Edits to that file apply right away.
 
 ## FPS
 
@@ -25,17 +25,17 @@ MangoHud only runs in games started through it: add `mangohud %command%` to a St
 ## Commands
 
 ```bash
-omarchy-shell gameoverlay toggle      # also: show, hide
-omarchy-shell gameoverlay position bottom-right
-omarchy-shell gameoverlay fps on      # also: off, toggle
-omarchy-shell gameoverlay status      # settings and state as JSON
-omarchy-shell gameoverlay stats       # the latest sample as JSON
+omarchy-shell gamercenter toggle      # the overlay; also: show, hide
+omarchy-shell gamercenter position bottom-right
+omarchy-shell gamercenter fps on      # also: off, toggle
+omarchy-shell gamercenter status      # settings and state as JSON
+omarchy-shell gamercenter stats       # the latest sample as JSON
 ```
 
 Positions: `top-left`, `top-center`, `top-right`, `bottom-left`, `bottom-center`, `bottom-right`.
 
 ## Notes
 
-- Stats come from `bin/gameoverlay-stats` (Python, standard library only). It runs only while the HUD is showing or the panel is open, reads `/proc` and `/sys` plus NVML for NVIDIA cards, and never wakes a GPU that is asleep.
+- Stats come from `bin/gamercenter-stats` (Python, standard library only). It runs only while the HUD is showing or the panel is open, reads `/proc` and `/sys` plus NVML for NVIDIA cards, and never wakes a GPU that is asleep.
 - If you turn on Hyprland's `render:direct_scanout`, a fullscreen game can't use it on a monitor while the HUD is showing there.
 - Run the tests with `tests/run.sh`.

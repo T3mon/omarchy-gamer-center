@@ -9,7 +9,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-loader = importlib.machinery.SourceFileLoader("gameoverlay_mangohud", os.path.join(HERE, "..", "bin", "gameoverlay-mangohud"))
+loader = importlib.machinery.SourceFileLoader("gamercenter_mangohud", os.path.join(HERE, "..", "bin", "gamercenter-mangohud"))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 mh = importlib.util.module_from_spec(spec)
 loader.exec_module(mh)

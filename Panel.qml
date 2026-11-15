@@ -11,10 +11,10 @@ import "overlay/Metrics.js" as Metrics
 // only shows it and calls in.
 Panel {
   id: root
-  moduleName: "t3mon.gameoverlay"
-  ipcTarget: "t3mon.gameoverlay"
+  moduleName: "t3mon.gamercenter"
+  ipcTarget: "t3mon.gamercenter"
 
-  readonly property string pluginId: "t3mon.gameoverlay"
+  readonly property string pluginId: "t3mon.gamercenter"
 
   Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
 

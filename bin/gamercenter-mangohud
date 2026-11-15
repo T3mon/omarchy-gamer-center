@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Keep the Game Overlay's FPS block in MangoHud.conf.
+"""Keep the Gamer Center's FPS block in MangoHud.conf.
 
-  gameoverlay-mangohud status
-  gameoverlay-mangohud apply --position top-right [--graph] [--font-size 22]
-  gameoverlay-mangohud remove
+  gamercenter-mangohud status
+  gamercenter-mangohud apply --position top-right [--graph] [--font-size 22]
+  gamercenter-mangohud remove
 
 Only the lines between the plugin's markers are ever rewritten; the rest of
 the file stays as it was. MangoHud reads options top to bottom and the last
@@ -19,8 +19,8 @@ import stat
 import sys
 import tempfile
 
-BEGIN = "# >>> omarchy game-overlay >>>"
-END = "# <<< omarchy game-overlay <<<"
+BEGIN = "# >>> omarchy gamer-center >>>"
+END = "# <<< omarchy gamer-center <<<"
 POSITIONS = ("top-left", "top-center", "top-right", "middle-left", "middle-right",
              "bottom-left", "bottom-center", "bottom-right")
 LAYERS = ("/usr/lib/mangohud/libMangoHud.so", "/usr/lib/libMangoHud.so")
@@ -59,7 +59,7 @@ def split_block(text):
 def render_block(position, graph, font_size):
     lines = [
         BEGIN,
-        "# Written by the Game Overlay shell plugin. Lines in this block are replaced.",
+        "# Written by the Gamer Center shell plugin. Lines in this block are replaced.",
         "legacy_layout=0",
         "fps",
         "frametime",
@@ -180,7 +180,7 @@ def font_size(value):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Manage the Game Overlay block in MangoHud.conf.")
+    ap = argparse.ArgumentParser(description="Manage the Gamer Center block in MangoHud.conf.")
     sub = ap.add_subparsers(dest="command", required=True)
     sub.add_parser("status")
     on = sub.add_parser("apply")

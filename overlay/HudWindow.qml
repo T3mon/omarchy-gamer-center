@@ -21,7 +21,7 @@ PanelWindow {
   visible: card.hasRows && (!config.fullscreenOnly || fullscreen)
   color: "transparent"
 
-  WlrLayershell.namespace: "omarchy-game-overlay"
+  WlrLayershell.namespace: "gamer-center-hud"
   WlrLayershell.layer: WlrLayer.Overlay
   WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
   exclusionMode: fullscreen ? ExclusionMode.Ignore : ExclusionMode.Normal

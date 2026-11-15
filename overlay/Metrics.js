@@ -1,6 +1,6 @@
 .pragma library
 
-// Pure helpers for the Game Overlay: settings, HUD placement, and turning one
+// Pure helpers for the Gamer Center overlay: settings, HUD placement, and turning one
 // stats sample into the lines the HUD draws. No QML types in here, so the
 // Node tests can load this file as it is.
 
