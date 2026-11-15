@@ -221,8 +221,8 @@ Panel {
       + (vram ? "\n" + vram + (gm.tickedVram > 0 ? " · " + strings.t("gm.frees").arg(size(gm.tickedVram)) : "") : "")
   }
 
-  // Apps (and the indexer) as one flat list, biggest RAM first; Docker
-  // projects in their own folder. Both keep indexes into gmItems so rows and
+  // Apps (and the indexer) as one flat list, Docker projects in their own
+  // folder, each biggest RAM first. Both keep indexes into gmItems so rows and
   // the cursor stay stable.
   readonly property var gmLoose: {
     var idx = []
@@ -232,6 +232,7 @@ Panel {
   readonly property var gmGroups: {
     var idx = []
     for (var i = 0; i < gmItems.length; i++) if (gmItems[i].kind === "docker") idx.push(i)
+    idx.sort(function(a, b) { return gmItems[b].mb - gmItems[a].mb || a - b })
     return idx.length ? [{ id: "docker", indexes: idx }] : []
   }
   readonly property var gmAll: ({ id: "all", indexes: gmItems.map(function(_, i) { return i }) })
@@ -1200,9 +1201,9 @@ Panel {
     onHovered: function(h) { if (h) root.point(rowId, 0) }
   }
 
-  // A Game mode section's title: the left part folds it (target 0), the
-  // switch ticks or pauses the whole section (target 1).
-  component GroupTitle: Item {
+  // A Game mode folder's title, drawn like the other rows: the box folds it
+  // (target 0), the switch ticks or pauses everything inside (target 1).
+  component GroupTitle: CursorSurface {
     id: groupTitle
     property string rowId: ""
     property string text: ""
@@ -1210,65 +1211,64 @@ Panel {
     property bool open: true
     property bool checked: false
     width: parent ? parent.width : 0
-    implicitHeight: Math.max(groupFold.implicitHeight, groupSwitch.implicitHeight + Style.spacing.xs * 2)
+    bordered: true
+    hasCursor: root.cursorOn(rowId, 0)
+    onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(groupTitle)
+    foreground: root.fg
+    implicitHeight: Math.max(groupSwitch.implicitHeight, groupText.implicitHeight) + Style.spacing.sm * 2
 
-    CursorSurface {
-      id: groupFold
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.toggleGmFold(groupTitle.rowId.slice(9))
+    }
+
+    HoverHandler {
+      onHoveredChanged: if (hovered) root.point(groupTitle.rowId, 0)
+    }
+
+    Text {
+      id: groupChevron
+      textFormat: Text.PlainText
+      text: groupTitle.open ? "\uf078" : "\uf054"
+      color: root.dimFg
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      width: Style.space(14)
       anchors.left: parent.left
-      anchors.right: groupSwitch.left
-      anchors.rightMargin: Style.space(8)
+      anchors.leftMargin: Style.spacing.sm + Style.space(2)
       anchors.verticalCenter: parent.verticalCenter
-      implicitHeight: Math.max(groupHeader.implicitHeight, groupChevron.implicitHeight) + Style.spacing.xs * 2
-      hasCursor: root.cursorOn(groupTitle.rowId, 0)
-      onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(groupTitle)
-      foreground: root.fg
+    }
+
+    Column {
+      id: groupText
+      anchors.left: groupChevron.right
+      anchors.leftMargin: Style.space(4)
+      anchors.right: groupSwitch.left
+      anchors.rightMargin: Style.spacing.sm
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(2)
 
       Text {
-        id: groupChevron
         textFormat: Text.PlainText
-        text: groupTitle.open ? "\uf078" : "\uf054"
-        color: root.dimFg
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        width: Style.space(14)
-        anchors.left: parent.left
-        anchors.leftMargin: Style.space(6)
-        anchors.verticalCenter: parent.verticalCenter
-      }
-
-      PanelSectionHeader {
-        id: groupHeader
         text: groupTitle.text
-        foreground: root.fg
-        fontFamily: root.fontFamily
-        anchors.left: groupChevron.right
-        anchors.leftMargin: Style.space(4)
-        anchors.verticalCenter: parent.verticalCenter
+        color: root.fg
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        font.bold: true
+        elide: Text.ElideRight
+        width: parent.width
       }
 
       Text {
         textFormat: Text.PlainText
+        visible: groupTitle.summary !== ""
         text: groupTitle.summary
         color: root.dimFg
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
-        elide: Text.ElideRight
-        horizontalAlignment: Text.AlignRight
-        anchors.left: groupHeader.right
-        anchors.leftMargin: Style.space(10)
-        anchors.right: parent.right
-        anchors.rightMargin: Style.space(6)
-        anchors.verticalCenter: parent.verticalCenter
-      }
-
-      MouseArea {
-        anchors.fill: parent
-        cursorShape: Qt.PointingHandCursor
-        onClicked: root.toggleGmFold(groupTitle.rowId.slice(9))
-      }
-
-      HoverHandler {
-        onHoveredChanged: if (hovered) root.point(groupTitle.rowId, 0)
+        wrapMode: Text.WordWrap
+        width: parent.width
       }
     }
 
@@ -1285,6 +1285,7 @@ Panel {
       onHovered: function(h) { if (h) root.point(groupTitle.rowId, 1) }
     }
   }
+
 
   // A tighter version of the kit's Toggle row: smaller title, smaller switch.
   component SmallToggle: CursorSurface {
