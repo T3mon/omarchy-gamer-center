@@ -381,6 +381,7 @@ Item {
     id: steamItem
     helper: root.steamHelper
     dealsHelper: root.pluginDir + "/bin/gamercenter-deals"
+    othersHelper: root.pluginDir + "/bin/gamercenter-games"
     configDir: root.configDir
     configDirReady: root.configDirReady
   }

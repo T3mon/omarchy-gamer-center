@@ -11,6 +11,7 @@ Item {
 
   required property string helper
   required property string dealsHelper
+  required property string othersHelper
   // ~/.config/gamer-center, and whether it exists yet.
   required property string configDir
   property bool configDirReady: false
@@ -71,7 +72,61 @@ Item {
     return true
   }
 
-  onWatchersChanged: if (watchers > 0) refresh()
+  // The other games are read once up front too, so their tab shows a count.
+  onWatchersChanged: if (watchers > 0) { refresh(); if (!others) refreshOthers() }
+
+  // ---- Other games: app-menu entries in the Game category.
+
+  // null until the first reading; "idle", "reading", "ready" or "failed".
+  property var others: null
+  property string othersPhase: "idle"
+  readonly property var otherGames: others ? others.games : []
+
+  // Read again each time the tab opens: it's quick, and a game installed
+  // since shows up.
+  function refreshOthers() {
+    if (othersProc.running) return
+    if (!others) othersPhase = "reading"
+    othersProc.running = true
+  }
+
+  function takeOthers(raw) {
+    var data
+    try { data = JSON.parse(String(raw || "")) } catch (e) { data = null }
+    var cleaned = Library.cleanOthers(data)
+    if (cleaned) {
+      others = cleaned
+      othersPhase = "ready"
+    } else if (!others) othersPhase = "failed"
+  }
+
+  function otherGame(id) {
+    for (var i = 0; i < otherGames.length; i++) if (otherGames[i].id === id) return otherGames[i]
+    return null
+  }
+
+  function launchOther(id) {
+    var cmd = Library.entryCommand(id, !!others && others.uwsm)
+    if (!otherGame(id) || !cmd.length) return false
+    Quickshell.execDetached(cmd)
+    return true
+  }
+
+  function openOtherFolder(id) {
+    var g = otherGame(id)
+    if (!g || !g.folder) return false
+    Quickshell.execDetached(Library.openCommand(g.folder, !!others && others.uwsm))
+    return true
+  }
+
+  Process {
+    id: othersProc
+    command: ["python3", "-I", root.othersHelper]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.takeOthers(text)
+    }
+  }
 
   // ---- Deals: 100% off games and wishlist sales, from Steam's store.
 

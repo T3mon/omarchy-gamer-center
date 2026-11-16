@@ -46,18 +46,21 @@ Panel {
   readonly property var steamModel: service ? service.steam : null
   readonly property string stPhase: steamModel ? steamModel.phase : "reading"
   readonly property var stDrives: steamModel ? steamModel.drives : []
-  // "installed", "other" (not installed) or "deals".
+  // "installed", "other" (not installed), "deals" or "local" (other games:
+  // app-menu entries in the Game category).
   property string stTab: "installed"
   readonly property bool stInstalled: stTab === "installed"
   readonly property bool stDeals: stTab === "deals"
+  readonly property bool stLocal: stTab === "local"
   readonly property int stDealMin: steamModel ? steamModel.dealMin : Library.DEAL_MIN_DEFAULT
   readonly property var stDealList: steamModel ? Library.dealList(steamModel.deals, stDealMin, stQuery, Library.ownedIds(steamModel.games)) : []
   property string stSort: "recent"
   property string stGameId: ""
-  readonly property string stSortShown: Library.sortFor(stSort, stInstalled)
+  readonly property string stSortShown: Library.sortFor(stSort, stInstalled, stLocal)
   property string stQuery: ""
   property bool stSearching: false
   readonly property var stGames: stDeals ? stDealList
+    : stLocal ? (steamModel ? Library.otherList(steamModel.otherGames, stSortShown, stQuery) : [])
     : steamModel ? Library.list(steamModel.games, stInstalled, stSort, stQuery) : []
   readonly property int stIndex: {
     for (var i = 0; i < stGames.length; i++) if (stGames[i].id === stGameId) return i
@@ -66,6 +69,7 @@ Panel {
   readonly property var stGame: stIndex >= 0 ? stGames[stIndex] : null
   // Text buttons first, then the icon-only ones (folder, launch options).
   readonly property var stActions: !stGame ? [] : stDeals ? ["store"]
+    : stLocal ? ["run"].concat(stGame.folder ? ["folder"] : [])
     : (stGame.installed ? ["run", "uninstall"] : ["install"])
         .concat(stGame.folder ? ["folder"] : [], ["options"])
   // The theme's green and yellow, re-read each time the panel opens.
@@ -94,7 +98,7 @@ Panel {
       : status === "unsupported" ? Commons.Color.urgent : dimFg
   }
   readonly property var stSortOptions: ["recent", "name", "size"]
-    .filter(function(v) { return stInstalled || v !== "size" })
+    .filter(function(v) { return stLocal ? v !== "recent" : stInstalled || v !== "size" })
     .map(function(v) { return { value: v, label: strings.t("steam.sort." + v) } })
   // "Today" and "yesterday" are counted from when the panel opened.
   property double stNow: Date.now()
@@ -186,6 +190,17 @@ Panel {
     stTab = tab
     stGameId = ""
     if (tab === "deals" && steamModel) steamModel.refreshDeals()
+    if (tab === "local" && steamModel) steamModel.refreshOthers()
+  }
+
+  // Under an other game's name: its size, and the entry's comment.
+  function localCaption(game) {
+    return [game.size > 0 ? bytes(game.size) : "", game.comment].filter(function(v) { return v }).join(" · ")
+  }
+
+  // An icon file, else the icon theme's file for the name.
+  function iconUrl(icon) {
+    return Library.iconFileUrl(icon) || (icon ? Quickshell.iconPath(icon, true) : "")
   }
 
   // Under a deal's name, and in its details: "-75% · 100₴", or "Free".
@@ -210,7 +225,8 @@ Panel {
   // the game or the dialog isn't left behind it.
   function steamAction(action) {
     if (!steamModel || !stGame) return
-    if (action === "folder") { if (steamModel.openFolder(stGame.id)) close() }
+    if (stLocal) { if (action === "folder" ? steamModel.openOtherFolder(stGame.id) : steamModel.launchOther(stGame.id)) close() }
+    else if (action === "folder") { if (steamModel.openFolder(stGame.id)) close() }
     else if (steamModel.open(action, stGame.id)) close()
   }
 
@@ -271,6 +287,7 @@ Panel {
     if (service) service.refreshMango()
     if (page !== "stats") themeColorsFile.reload()
     if (page === "steam" && stDeals && steamModel) steamModel.refreshDeals()
+    if (page === "steam" && stLocal && steamModel) steamModel.refreshOthers()
     stNow = Date.now()
     cursorRow = page === "stats" ? "enabled" : page === "gamemode" ? "gm-power" : "st-top"
     cursorCol = 0
@@ -499,7 +516,7 @@ Panel {
     var list = [{ id: "page", count: pages.length }]
     if (page === "steam") {
       if (stPhase !== "ready") return list
-      list.push({ id: "st-top", count: 3 + (stDeals ? 2 : stSortOptions.length) }, { id: "st-search", count: 1 })
+      list.push({ id: "st-top", count: 4 + (stDeals ? 2 : stSortOptions.length) }, { id: "st-search", count: 1 })
       for (var s = 0; s < stGames.length; s++) list.push({ id: "st-game-" + s, count: 1 })
       if (stActions.length) list.push({ id: "st-actions", count: stActions.length })
       return list
@@ -610,9 +627,9 @@ Panel {
     var col = cursorCol
     if (id === "page") setPage(pages[col] || "stats")
     else if (id === "st-top") {
-      if (col < 3) setSteamTab(stTabs.options[col].value)
-      else if (stDeals) { if (steamModel) steamModel.setDealMin(stDealMin + (col === 3 ? -5 : 5)) }
-      else if (stSortOptions[col - 3]) stSort = stSortOptions[col - 3].value
+      if (col < 4) setSteamTab(stTabs.options[col].value)
+      else if (stDeals) { if (steamModel) steamModel.setDealMin(stDealMin + (col === 4 ? -5 : 5)) }
+      else if (stSortOptions[col - 4]) stSort = stSortOptions[col - 4].value
     }
     else if (id.indexOf("st-game-") === 0) {
       selectGame(Number(id.slice(8)))
@@ -1385,7 +1402,10 @@ Panel {
                   { value: "installed", label: strings.t("steam.installed").arg(Commons.I18n.formatNumber(root.steamModel ? Library.countInstalled(root.steamModel.games, true, root.stQuery) : 0)) },
                   { value: "other", label: strings.t("steam.notInstalled").arg(Commons.I18n.formatNumber(root.steamModel ? Library.countInstalled(root.steamModel.games, false, root.stQuery) : 0)) },
                   { value: "deals", label: root.steamModel && root.steamModel.deals
-                      ? strings.t("steam.deals.count").arg(Commons.I18n.formatNumber(root.stDealList.length)) : strings.t("steam.deals") }
+                      ? strings.t("steam.deals.count").arg(Commons.I18n.formatNumber(root.stDealList.length)) : strings.t("steam.deals") },
+                  { value: "local", label: root.steamModel && root.steamModel.others
+                      ? strings.t("steam.local.count").arg(Commons.I18n.formatNumber(Library.otherList(root.steamModel.otherGames, "name", root.stQuery).length))
+                      : strings.t("steam.local") }
                 ]
                 value: root.stTab
                 focusable: false
@@ -1393,7 +1413,7 @@ Panel {
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 spacing: Style.spacing.xs
-                cursorIndex: { var c = root.cursorIndexFor("st-top"); return c >= 0 && c < 3 ? c : -1 }
+                cursorIndex: { var c = root.cursorIndexFor("st-top"); return c >= 0 && c < 4 ? c : -1 }
                 onChanged: function(v) { root.setSteamTab(v) }
                 onHovered: function(i, h) { if (h) root.point("st-top", i) }
               }
@@ -1413,9 +1433,9 @@ Panel {
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   enabled: root.stDealMin > 5
-                  hasCursor: root.cursorOn("st-top", 3)
+                  hasCursor: root.cursorOn("st-top", 4)
                   onClicked: if (root.steamModel) root.steamModel.setDealMin(root.stDealMin - 5)
-                  onHovered: function(h) { if (h) root.point("st-top", 3) }
+                  onHovered: function(h) { if (h) root.point("st-top", 4) }
                 }
 
                 Text {
@@ -1434,9 +1454,9 @@ Panel {
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption
                   enabled: root.stDealMin < 100
-                  hasCursor: root.cursorOn("st-top", 4)
+                  hasCursor: root.cursorOn("st-top", 5)
                   onClicked: if (root.steamModel) root.steamModel.setDealMin(root.stDealMin + 5)
-                  onHovered: function(h) { if (h) root.point("st-top", 4) }
+                  onHovered: function(h) { if (h) root.point("st-top", 5) }
                 }
               }
 
@@ -1452,9 +1472,9 @@ Panel {
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 spacing: Style.spacing.xs
-                cursorIndex: { var c = root.cursorIndexFor("st-top"); return c >= 3 ? c - 3 : -1 }
+                cursorIndex: { var c = root.cursorIndexFor("st-top"); return c >= 4 ? c - 4 : -1 }
                 onChanged: function(v) { root.stSort = v }
-                onHovered: function(i, h) { if (h) root.point("st-top", i + 3) }
+                onHovered: function(i, h) { if (h) root.point("st-top", i + 4) }
               }
             }
 
@@ -1582,11 +1602,15 @@ Panel {
               anchors.right: stList.right
               anchors.top: stList.top
               textFormat: Text.PlainText
-              text: !root.stDeals ? strings.t(root.stQuery.trim() ? "steam.noMatch" : root.stInstalled ? "steam.noneInstalled" : "steam.allInstalled")
+              text: root.stLocal ? (!root.steamModel || root.steamModel.othersPhase !== "ready"
+                    ? strings.t("steam.local." + (root.steamModel ? root.steamModel.othersPhase : "reading"))
+                    : strings.t(root.stQuery.trim() ? "steam.noMatch" : "steam.local.none"))
+                : !root.stDeals ? strings.t(root.stQuery.trim() ? "steam.noMatch" : root.stInstalled ? "steam.noneInstalled" : "steam.allInstalled")
                 : !root.steamModel || root.steamModel.dealsPhase !== "ready" ? strings.t("steam.deals." + (root.steamModel ? root.steamModel.dealsPhase : "reading"))
                 : root.stQuery.trim() ? strings.t("steam.noMatch")
                 : strings.t(root.steamModel.deals.wishlistOk ? "steam.deals.none" : "steam.deals.noneNoWishlist")
-              color: root.stDeals && root.steamModel && root.steamModel.dealsPhase === "failed" ? Commons.Color.urgent : root.dimFg
+              color: root.steamModel && (root.stDeals && root.steamModel.dealsPhase === "failed"
+                || root.stLocal && root.steamModel.othersPhase === "failed") ? Commons.Color.urgent : root.dimFg
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
@@ -1607,9 +1631,11 @@ Panel {
                 visible: !root.stDeals
                 anchors.left: parent.left
                 anchors.top: parent.top
-                width: root.stDeals ? 0 : Style.space(150)
-                height: root.stDeals ? 0 : Math.round(width * 1.5)
-                path: stDetails.game.cover || ""
+                width: root.stDeals ? 0 : root.stLocal ? Style.space(96) : Style.space(150)
+                height: root.stDeals ? 0 : root.stLocal ? width : Math.round(width * 1.5)
+                iconMode: root.stLocal
+                icon: root.stLocal ? stDetails.game.icon || "" : ""
+                path: root.stLocal ? "" : stDetails.game.cover || ""
               }
 
               Column {
@@ -1658,7 +1684,30 @@ Panel {
 
                 Text {
                   width: parent.width
-                  visible: !root.stDeals
+                  visible: root.stLocal && !!stDetails.game.comment
+                  textFormat: Text.PlainText
+                  text: stDetails.game.comment || ""
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+
+                Text {
+                  width: parent.width
+                  visible: root.stLocal
+                  textFormat: Text.PlainText
+                  text: stDetails.game.size > 0 ? strings.t("steam.local.sizeIn").arg(root.bytes(stDetails.game.size)).arg(stDetails.game.folder || "")
+                    : strings.t("steam.local.fromMenu")
+                  color: root.dimFg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WrapAnywhere
+                }
+
+                Text {
+                  width: parent.width
+                  visible: !root.stDeals && !root.stLocal
                   textFormat: Text.PlainText
                   text: root.playedLine(stDetails.game)
                   color: root.dimFg
@@ -1669,7 +1718,7 @@ Panel {
 
                 Text {
                   width: parent.width
-                  visible: !root.stDeals && !!stDetails.game.installed
+                  visible: !root.stDeals && !root.stLocal && !!stDetails.game.installed
                   textFormat: Text.PlainText
                   text: root.sizeLine(stDetails.game)
                   color: root.dimFg
@@ -1680,7 +1729,7 @@ Panel {
 
                 Text {
                   width: parent.width
-                  visible: !root.stDeals
+                  visible: !root.stDeals && !root.stLocal
                   textFormat: Text.PlainText
                   text: strings.t("steam.deck").arg(strings.t("steam.deck." + stDetails.game.deck))
                   color: root.deckColor(stDetails.game.deck)
@@ -1693,7 +1742,7 @@ Panel {
               Column {
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.top: root.stDeals ? stInfo.bottom : stCover.bottom
+                anchors.top: root.stDeals || root.stLocal && stInfo.height > stCover.height ? stInfo.bottom : stCover.bottom
                 anchors.topMargin: Style.space(14)
                 spacing: Style.space(8)
 
@@ -1731,7 +1780,7 @@ Panel {
                   width: parent.width
                   textFormat: Text.PlainText
                   visible: text !== ""
-                  text: root.stDeals ? (stDetails.game.discount >= 100 && !stDetails.game.owned ? strings.t("steam.deals.claimHint") : "")
+                  text: root.stLocal ? "" : root.stDeals ? (stDetails.game.discount >= 100 && !stDetails.game.owned ? strings.t("steam.deals.claimHint") : "")
                     : strings.t(stDetails.game.installed ? "steam.uninstallHint" : "steam.installHint")
                   color: root.dimFg
                   font.family: root.fontFamily
@@ -1985,6 +2034,9 @@ Panel {
     id: coverBox
     property string path: ""
     property bool small: false
+    // An app-menu icon instead of a Steam cover: fitted, with some room around it.
+    property bool iconMode: false
+    property string icon: ""
     color: Util.alpha(root.fg, 0.08)
     radius: Style.cornerRadius
     clip: true
@@ -2002,11 +2054,12 @@ Panel {
     Image {
       id: coverImage
       anchors.fill: parent
+      anchors.margins: coverBox.iconMode ? Math.round(coverBox.width * 0.14) : 0
       visible: status === Image.Ready
-      source: Library.coverUrl(coverBox.path)
+      source: coverBox.iconMode ? root.iconUrl(coverBox.icon) : Library.coverUrl(coverBox.path)
       asynchronous: true
-      fillMode: Image.PreserveAspectCrop
-      sourceSize: coverBox.small ? Qt.size(64, 96) : Qt.size(320, 480)
+      fillMode: coverBox.iconMode ? Image.PreserveAspectFit : Image.PreserveAspectCrop
+      sourceSize: coverBox.iconMode ? Qt.size(128, 128) : coverBox.small ? Qt.size(64, 96) : Qt.size(320, 480)
       smooth: true
     }
   }
@@ -2032,8 +2085,10 @@ Panel {
       anchors.leftMargin: Style.space(6)
       anchors.verticalCenter: parent.verticalCenter
       height: parent.height - Style.space(10)
-      width: root.stDeals ? 0 : Math.round(height / 1.5)
-      path: gameRow.game.cover || ""
+      width: root.stDeals ? 0 : root.stLocal ? height : Math.round(height / 1.5)
+      iconMode: root.stLocal
+      icon: root.stLocal ? gameRow.game.icon || "" : ""
+      path: root.stLocal ? "" : gameRow.game.cover || ""
     }
 
     Column {
@@ -2059,7 +2114,7 @@ Panel {
         width: parent.width
         visible: text !== ""
         textFormat: Text.PlainText
-        text: root.stDeals ? root.dealCaption(gameRow.game) : root.rowCaption(gameRow.game)
+        text: root.stDeals ? root.dealCaption(gameRow.game) : root.stLocal ? root.localCaption(gameRow.game) : root.rowCaption(gameRow.game)
         color: root.dimFg
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption

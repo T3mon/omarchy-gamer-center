@@ -100,9 +100,11 @@ function clean(data) {
   return { uwsm: data.uwsm === true, drives: drives, games: games }
 }
 
-// Size means nothing for games that aren't on disk; they sort by name instead.
-function sortFor(sort, installed) {
+// Size means nothing for games that aren't on disk, and other games have no
+// last played; those sort by name instead.
+function sortFor(sort, installed, other) {
   var s = SORTS.indexOf(sort) >= 0 ? sort : "recent"
+  if (other) return s === "recent" ? "name" : s
   return s === "size" && !installed ? "name" : s
 }
 
@@ -226,4 +228,60 @@ function ownedIds(games) {
   var out = {}
   for (var i = 0; games && i < games.length; i++) out[games[i].id] = true
   return out
+}
+
+// ---- Other games: app-menu entries in the Game category --------------------
+
+function validEntryId(id) {
+  return typeof id === "string" && id.length <= 210 && /^[A-Za-z0-9_][A-Za-z0-9 ._+-]*\.desktop$/.test(id)
+}
+
+// An absolute path with no control characters and no . or .. segments.
+function plainPath(v, max) {
+  return typeof v === "string" && v.length <= max && /^\/[^\u0000-\u001f\u007f]*$/.test(v)
+    && (v + "/").indexOf("/../") === -1 && (v + "/").indexOf("/./") === -1 ? v : ""
+}
+
+// An icon theme name, or an image file.
+function entryIcon(v) {
+  if (typeof v !== "string") return ""
+  if (v.charAt(0) === "/") return /\.(png|svg|jpg|jpeg|xpm)$/i.test(v) ? plainPath(v, 1024) : ""
+  return v.length <= 200 && /^[A-Za-z0-9_][A-Za-z0-9._+-]*$/.test(v) ? v : ""
+}
+
+// file:// URL for an icon file, each segment escaped; "" for a theme name.
+function iconFileUrl(icon) {
+  var p = entryIcon(icon)
+  return p.charAt(0) === "/" ? "file://" + p.split("/").map(encodeURIComponent).join("/") : ""
+}
+
+// bin/gamercenter-games' JSON. Returns { uwsm, games }, or null.
+function cleanOthers(data) {
+  if (!data || typeof data !== "object" || data.ok !== true || !Array.isArray(data.games)) return null
+  var games = [], seen = {}
+  for (var i = 0; i < data.games.length && games.length < 500; i++) {
+    var g = data.games[i]
+    if (!g || typeof g !== "object" || !validEntryId(g.id) || seen[g.id]) continue
+    var name = text(g.name, 120)
+    if (!name) continue
+    seen[g.id] = true
+    var where = plainPath(g.folder, 4096)
+    games.push({ id: g.id, name: name, comment: text(g.comment, 200), icon: entryIcon(g.icon),
+                 folder: where, size: where ? count(g.size) : 0 })
+  }
+  return { uwsm: data.uwsm === true, games: games }
+}
+
+// The other games matching the search, by name or by size.
+function otherList(games, sort, query) {
+  var out = (games || []).filter(function(g) { return matches(g, query) })
+  out.sort(function(a, b) { return sort === "size" && a.size !== b.size ? b.size - a.size : byName(a, b) })
+  return out
+}
+
+// Starts a desktop entry by its id, the way the app menu does; the entry's
+// Exec line is never handed to a shell here.
+function entryCommand(id, uwsm) {
+  if (!validEntryId(id)) return []
+  return uwsm ? ["uwsm-app", "--", id] : ["gtk-launch", id]
 }

@@ -21,6 +21,7 @@ Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how O
 | `bin/gamercenter-mangohud` | Manages our block in MangoHud.conf: `status`, `apply`, `remove` |
 | `bin/gamercenter-gamemode` | Game mode helper, ported from omarchy-gamemode: `status`, `select`, `on`, `off`, `toggle`, `pause`, `resume`, `auto`, `detect` |
 | `bin/gamercenter-steam` | Steam library reader: one JSON object with drives and games. `--root DIR` reads a fixture Steam folder |
+| `bin/gamercenter-games` | Other games: app-menu entries in the Game category that aren't Steam's, one JSON object. `--dirs A:B` reads other applications folders |
 | `bin/gamercenter-deals` | Steam deals reader, the only part that goes online: 100% off games and discounted wishlist games, one JSON object |
 | `licenses/omarchy-gamemode.txt`, `licenses/omarchy-quick-steam.txt` | The MIT notices the ports must keep |
 | `i18n/en.json` | Every UI string |
@@ -62,6 +63,7 @@ Before writing plugin code, load the `omarchy-plugin-dev` skill. It covers how O
 - Colors: Launch green, Install accent, Uninstall `Color.urgent`; Deck Verified green, Playable yellow, Unsupported urgent. The shell has no green or yellow, so `themeColorsFile` reads the theme's `colors.toml` (`Library.themeColors()`: `green`/`yellow`, else `color2`/`color3`) when the panel or the Steam page opens; foreground when missing.
 - Keyboard rows: `st-top` (two tabs, then the sorts), `st-search`, `st-game-i` (moving onto one picks it), `st-actions`. Right on a game goes to the buttons; left at the first button, or up, goes back. Esc closes the panel.
 - Deals tab (third tab, `stTab` "deals"): `gamercenter-deals` reads Steam's store search for 100% off games (the infinite-scroll endpoint with `maxprice=free&specials=1`, Steam Sniper's method; the rows' HTML is parsed) and, for the last-logged-in account, `IWishlistService/GetWishlist` → `appdetails?filters=price_overview` (prices for your region, batches of 100) → `IStoreBrowseService/GetItems` (names, discounted ids only). No key, no login; a private wishlist reads as empty (`wishlistOk` false only on a failed call). Run when the Deals tab opens, at most every 15 min (`Steam.refreshDeals()`). Text only, no covers, as asked. `Library.dealList()`: free first, then wishlist games at or over `dealMin`, biggest discount first, owned ones marked. `dealMin` (5..100, steps of 5, default 50) is set by the − / + buttons where the sorts sit and saved in `~/.config/gamer-center/steam.json` as `wishlistDiscount`. The one action is `steam://store/N`.
+- Other games tab (fourth tab, `stTab` "local"): `gamercenter-games` lists `.desktop` entries where the app menu looks (XDG_DATA_HOME, Flatpak exports, XDG_DATA_DIRS; first entry per id wins) with `Type=Application`, `Game` in Categories, not NoDisplay/Hidden, TryExec found, and not Steam (`steam.desktop`, a `steam://` Exec, or Exec running `steam`: those are on the Steam tabs). It gives the entry id, Name, Comment, Icon (theme name or image file), `Path=` as the folder (not /, home or above) and the bytes under it. Read when the Steam page first opens (for the tab's count) and each time the tab opens. Launch is `uwsm-app -- <id>` (`gtk-launch <id>` without uwsm); the Exec line is never run by us. Sorts are Name and Size; icons come from `Library.iconFileUrl()` or `Quickshell.iconPath()`. Games with no app-menu entry, or one not in the Game category, don't show; that's the known limit.
 - Dates: `Library.daysAgo()` counts calendar days from `stNow`, set when the panel opens: today, yesterday, N days ago under 30, else "MMM yyyy".
 
 ## Stats helper
@@ -102,6 +104,7 @@ omarchy plugin validate .
 - Automatic mode with a real game running.
 - Middle-click on the bar icon.
 - The All switch and the Docker folder's switch in the Game mode list (folding was checked).
+- The Other games tab's Launch and folder buttons (checked in a screenshot only).
 - The Deals tab with real wishlist sales, its − / + buttons and Store page button; the Steam page's Launch, Install, Uninstall, folder and launch-options buttons (they start Steam, its dialogs or the file manager), and its keyboard and mouse use: tab switch, sort, picking a game, moving to the buttons, typing in search, the icon tooltips. Both tabs, a preset search, the colors, and the Deck line were checked in screenshots.
 
 ## Git

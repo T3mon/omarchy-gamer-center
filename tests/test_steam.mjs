@@ -202,3 +202,35 @@ test("the wishlist threshold is 5 to 100 in fives", () => {
   assert.deepEqual([L.dealMin(50), L.dealMin(0), L.dealMin(101), L.dealMin(47), L.dealMin("x"), L.dealMin(NaN)], [50, 5, 100, 45, 50, 50])
   assert.equal(L.steamUrl("store", "10"), "steam://store/10")
 })
+
+test("other games are cleaned, listed and launched by entry id only", () => {
+  assert.equal(L.cleanOthers({ ok: true }), null)
+  const data = {
+    ok: true, uwsm: true,
+    games: [
+      { id: "rent-day.desktop", name: "Rent Day", comment: "Collect\u0007 the rent", icon: "/home/u/Games/RentDay/icon.png",
+        folder: "/home/u/Games/RentDay", size: 180 },
+      { id: "songs.desktop", name: "Songs", icon: "songs-of-syx", folder: "", size: 999 },
+      { id: "-x.desktop", name: "Flag" },
+      { id: "a;b.desktop", name: "Shell" },
+      { id: "rent-day.desktop", name: "Duplicate" },
+      { id: "c.desktop", name: "Bad paths", icon: "/x/../etc/passwd.png", folder: "/x/../y", size: 5 },
+      { id: "d.desktop", name: "Bad icon", icon: "$(rm)" }
+    ]
+  }
+  const cleaned = plain(L.cleanOthers(data))
+  assert.deepEqual(cleaned.games.map(g => g.id), ["rent-day.desktop", "songs.desktop", "c.desktop", "d.desktop"])
+  assert.equal(cleaned.games[0].comment, "Collect  the rent")
+  assert.equal(cleaned.games[1].size, 0)
+  assert.deepEqual([cleaned.games[2].icon, cleaned.games[2].folder, cleaned.games[2].size], ["", "", 0])
+  assert.equal(cleaned.games[3].icon, "")
+  assert.deepEqual(plain(L.otherList(cleaned.games, "size", "")).map(g => g.name), ["Rent Day", "Bad icon", "Bad paths", "Songs"])
+  assert.deepEqual(plain(L.otherList(cleaned.games, "name", "song")).map(g => g.name), ["Songs"])
+  assert.equal(L.iconFileUrl("/home/u/My Games/i.png"), "file:///home/u/My%20Games/i.png")
+  assert.equal(L.iconFileUrl("songs-of-syx"), "")
+  assert.deepEqual(plain(L.entryCommand("rent-day.desktop", true)), ["uwsm-app", "--", "rent-day.desktop"])
+  assert.deepEqual(plain(L.entryCommand("Probably Stolen.desktop", false)), ["gtk-launch", "Probably Stolen.desktop"])
+  assert.deepEqual(plain(L.entryCommand("x:action.desktop", true)), [])
+  assert.equal(L.sortFor("recent", false, true), "name")
+  assert.equal(L.sortFor("size", false, true), "size")
+})

@@ -160,5 +160,13 @@
   "steam.deals.ownedLine": "Already in your library",
   "steam.deals.wishlistLine": "On your wishlist",
   "steam.deals.claimHint": "Add it to your account on its store page to keep it.",
-  "steam.action.store": "Store page"
+  "steam.action.store": "Store page",
+  "steam.local": "Other games",
+  "steam.local.count": "Other games · %1",
+  "steam.local.reading": "Looking for games…",
+  "steam.local.idle": "Looking for games…",
+  "steam.local.failed": "Couldn't look for games.",
+  "steam.local.none": "No other games found. Games show up here when their app-menu entry is in the Game category.",
+  "steam.local.sizeIn": "%1 in %2",
+  "steam.local.fromMenu": "From the app menu"
 }
