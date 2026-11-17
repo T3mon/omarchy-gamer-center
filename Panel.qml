@@ -59,14 +59,45 @@ Panel {
   readonly property string stSortShown: Library.sortFor(stSort, stInstalled, stLocal)
   property string stQuery: ""
   property bool stSearching: false
+  // Filters for the Installed and Not installed tabs, kept until the shell restarts.
+  property string stFilterPlayed: "all"
+  property var stFilterRuns: []
+  property bool stFilterFav: false
+  property bool stFilterUpdates: false
+  readonly property bool stFiltered: !stDeals && !stLocal
+  // The filters card over the list.
+  property bool stFilterOpen: false
+  readonly property var stSizes: steamModel ? steamModel.sizes : ({})
+  function stFilterFor(installed) {
+    return { played: stFilterPlayed, runs: stFilterRuns, favorites: stFilterFav, updates: installed && stFilterUpdates }
+  }
+  readonly property int stActiveFilters: stFiltered ? Library.activeFilters(stFilterFor(stInstalled)) : 0
+  // What each choice in the card would show; only counted while it's open.
+  readonly property var stFacets: stFilterOpen && steamModel ? Library.facets(steamModel.games, stInstalled, stQuery, stFilterFor(stInstalled)) : null
+  // The filters in use, as removable chips under the search.
+  readonly property var stChips: {
+    if (!stFiltered) return []
+    var out = []
+    for (var i = 0; i < stFilterRuns.length; i++) out.push({ group: "runs", value: stFilterRuns[i] })
+    if (stFilterPlayed !== "all") out.push({ group: "played", value: stFilterPlayed })
+    if (stFilterFav) out.push({ group: "favorites", value: "" })
+    if (stInstalled && stFilterUpdates) out.push({ group: "updates", value: "" })
+    return out
+  }
   readonly property var stGames: stDeals ? stDealList
     : stLocal ? (steamModel ? Library.otherList(steamModel.otherGames, stSortShown, stQuery) : [])
-    : steamModel ? Library.list(steamModel.games, stInstalled, stSort, stQuery) : []
+    : steamModel ? Library.list(steamModel.games, stInstalled, stSort, stQuery, stFilterFor(stInstalled), stSizes) : []
   readonly property int stIndex: {
     for (var i = 0; i < stGames.length; i++) if (stGames[i].id === stGameId) return i
     return stGames.length ? 0 : -1
   }
   readonly property var stGame: stIndex >= 0 ? stGames[stIndex] : null
+  // The DLC list starts folded, and the Deck report closes, for each game shown.
+  property bool stDlcOpen: false
+  property bool stDeckOpen: false
+  readonly property string stShownId: stGame ? stTab + ":" + stGame.id : ""
+  onStShownIdChanged: { stDlcOpen = false; stDeckOpen = false }
+  readonly property bool stHasDlc: stFiltered && !!stGame && !!stGame.dlc && stGame.dlc.length > 0
   // Text buttons first, then the icon-only ones (folder, launch options).
   readonly property var stActions: !stGame ? [] : stDeals ? ["store"]
     : stLocal ? ["run"].concat(stGame.folder ? ["folder"] : [])
@@ -167,25 +198,195 @@ Panel {
     var parts = []
     var when = whenText(game.lastPlayed)
     if (when) parts.push(when)
-    if (game.installed) parts.push(bytes(game.size))
+    if (game.installed) parts.push(bytes(Library.fullSize(game, stSizes)))
     return parts.join(" · ")
   }
 
-  function playedLine(game) {
+  // Filters: names, colors, and changes. Every change shows the list's first game.
+  function runLabel(v) { return strings.t("steam.filter.runs." + v) }
+
+  function runColor(v) {
+    return v === "linux" || v === "verified" ? stGreen : v === "compatible" ? stYellow
+      : v === "unsupported" ? Commons.Color.urgent : dimFg
+  }
+
+  function chipLabel(chip) {
+    if (chip.group === "runs") return runLabel(chip.value)
+    if (chip.group === "played") return strings.t("steam.filter.played." + chip.value)
+    if (chip.group === "favorites") return "\uf005  " + strings.t("steam.filter.favorites")
+    return "\uf021  " + strings.t("steam.filter.updates")
+  }
+
+  function chipColor(chip) {
+    if (chip.group === "runs") return runColor(chip.value)
+    if (chip.group === "favorites" || chip.group === "updates") return stYellow
+    return Commons.Color.accent
+  }
+
+  function toggleRun(v) { stFilterRuns = Library.toggleRun(stFilterRuns, v); stGameId = "" }
+  function setPlayed(v) { if (Library.PLAYED.indexOf(v) >= 0) { stFilterPlayed = v; stGameId = "" } }
+  function toggleFav() { stFilterFav = !stFilterFav; stGameId = "" }
+  function toggleUpdates() { stFilterUpdates = !stFilterUpdates; stGameId = "" }
+
+  function clearFilters() {
+    stFilterRuns = []
+    stFilterPlayed = "all"
+    stFilterFav = false
+    stFilterUpdates = false
+    stGameId = ""
+  }
+
+  function removeChip(chip) {
+    if (!chip) return
+    if (chip.group === "runs") toggleRun(chip.value)
+    else if (chip.group === "played") setPlayed("all")
+    else if (chip.group === "favorites") toggleFav()
+    else toggleUpdates()
+  }
+
+  // "Linux native  12": a choice and how many games it would show.
+  function facetText(label, n) {
+    return stFacets ? label + "  " + Commons.I18n.formatNumber(n) : label
+  }
+
+  // The card's rows, top to bottom, for the keyboard.
+  readonly property var stCardRows: [
+    { id: "st-fc-runs", count: Library.RUNS.length },
+    { id: "st-fc-played", count: Library.PLAYED.length },
+    { id: "st-fc-show", count: stInstalled ? 2 : 1 },
+    { id: "st-fc-foot", count: 2 }
+  ]
+
+  function openFilters(open) {
+    stFilterOpen = open && stFiltered
+    stSearching = false
+    cursorActive = true
+    cursorByMouse = false
+    cursorRow = stFilterOpen ? "st-fc-runs" : "st-search"
+    cursorCol = stFilterOpen ? 0 : 1
+  }
+
+  function activateCard(id, col) {
+    if (id === "st-fc-runs") toggleRun(Library.RUNS[col])
+    else if (id === "st-fc-played") setPlayed(Library.PLAYED[col])
+    else if (id === "st-fc-show") { if (col === 0) toggleFav(); else toggleUpdates() }
+    else if (id === "st-fc-foot") { if (col === 0) clearFilters(); else openFilters(false) }
+  }
+
+  // The update badge on a row and the line in the details.
+  function updateText(game) {
+    if (!game || !game.update) return ""
+    if (game.update === "downloading" || game.update === "paused")
+      return strings.t("steam.update." + game.update).arg(Commons.I18n.formatNumber(game.progress))
+    return strings.t("steam.update." + game.update)
+  }
+
+  // Game · mods · prefix · shader cache, the parts that aren't zero.
+  function sizeParts(game) {
+    var extra = stSizes && stSizes.hasOwnProperty(game.id) ? stSizes[game.id] : [0, 0]
+    var parts = [strings.t("steam.size.game").arg(bytes(game.size))]
+    if (game.workshop > 0) parts.push(strings.tn("steam.size.mods", game.mods).arg(bytes(game.workshop)).arg(Commons.I18n.formatNumber(game.mods)))
+    if (extra[0] > 0) parts.push(strings.t("steam.size.prefix").arg(bytes(extra[0])))
+    if (extra[1] > 0) parts.push(strings.t("steam.size.shaders").arg(bytes(extra[1])))
+    return parts.length > 1 ? parts.join(" · ") : ""
+  }
+
+  function dlcHeader(game) {
+    var c = Library.dlcCounts(game.dlc)
+    var text = strings.t("steam.dlc.header").arg(Commons.I18n.formatNumber(c.owned)).arg(Commons.I18n.formatNumber(c.total))
+    return game.installed && c.owned > 0 ? text + " · " + strings.t("steam.dlc.installedCount").arg(Commons.I18n.formatNumber(c.installed)) : text
+  }
+
+  function dlcColor(state) {
+    return state === "installed" ? stGreen : state === "owned" ? fg : dimFg
+  }
+
+  // The details' badges and facts.
+  function platformBadge(game) {
+    if (game.forcedTool || game.platform === "proton") return "\uf17a  " + strings.t("steam.badge.proton")
+    if (game.platform === "linux") return "\uf17c  " + strings.t("steam.platform.linux")
+    if (game.platform === "windows") return "\uf17a  " + strings.t("steam.badge.windows")
+    return ""
+  }
+
+  function platformColor(game) {
+    return game.platform === "linux" && !game.forcedTool ? stGreen
+      : game.platform === "windows" ? dimFg : Commons.Color.accent
+  }
+
+  // The Proton that runs it, only when it's known or forced.
+  function runsWith(game) {
+    if (game.forcedTool) return strings.t("steam.fact.forced").arg(game.forcedTool)
+    if (game.platform === "proton" && game.proton) return game.proton
+    return ""
+  }
+
+  function playedValue(game) {
     var when = whenText(game.lastPlayed)
-    if (!when && game.playtime <= 0) return strings.t("steam.notPlayed")
+    if (!when && game.playtime <= 0) return strings.t("steam.fact.never")
     var parts = []
-    if (when) parts.push(strings.t("steam.lastPlayed").arg(when))
+    if (when) parts.push(when)
     if (game.playtime > 0) parts.push(playedText(game.playtime))
     return parts.join(" · ")
   }
 
+  function openDeck() {
+    if (!stGame || !stFiltered || !steamModel) return
+    stDeckOpen = true
+    steamModel.refreshDeck(stGame.id)
+  }
+
+  function dateText(seconds) {
+    return seconds > 0 ? new Date(seconds * 1000).toLocaleDateString(Qt.locale(Commons.I18n.formatLocale), "d MMM yyyy") : ""
+  }
+
+  function deckTestedLine(r) {
+    var when = dateText(r.testedAt)
+    if (when && r.testedBuild) return strings.t("steam.deck.testedOn").arg(when).arg(r.testedBuild)
+    if (when) return strings.t("steam.deck.tested").arg(when)
+    if (r.testedBuild) return strings.t("steam.deck.testedBuild").arg(r.testedBuild)
+    return ""
+  }
+
+  function deckSectionTitle(kind, r) {
+    var rating = kind === "steamos" ? strings.t("steam.deck.os." + r.steamos) : strings.t("steam.deck." + r[kind])
+    return strings.t("steam.deck.section." + kind).arg(rating)
+  }
+
+  function deckSectionColor(kind, r) {
+    if (kind !== "steamos") return deckColor(r[kind])
+    return r.steamos === 3 ? stGreen : r.steamos === 2 ? stYellow : r.steamos === 1 ? Commons.Color.urgent : dimFg
+  }
+
+  function deckKindColor(kind) {
+    return kind === "pass" ? stGreen : kind === "warning" ? stYellow : kind === "fail" ? Commons.Color.urgent : dimFg
+  }
+
+  // A flag's value in words: Yes / No, the runtime, HDR, input.
+  function deckFlagValue(key, value) {
+    if (key === "recommended_runtime") {
+      if (value === "native") return strings.t("steam.platform.linux")
+      if (value === "proton-stable") return strings.t("deck.runtime.stable")
+      if (value === "proton-experimental") return strings.t("deck.runtime.experimental")
+      var m = /^proton-([0-9.]+)/.exec(value)
+      return m ? strings.t("deck.runtime.version").arg(m[1]) : value
+    }
+    if (key === "hdr_support") return strings.t(value === "0" ? "deck.value.no" : "deck.value.yes")
+    if (key === "supported_input") return strings.t("deck.input." + value, value)
+    if (key === "proton_compat_config") return value.replace(/,+$/, "").split(",").join(", ")
+    if (value === "0") return strings.t("deck.value.no")
+    if (value === "1") return strings.t("deck.value.yes")
+    return value
+  }
+
   function sizeLine(game) {
     var d = game.drive >= 0 ? stDrives[game.drive] : null
-    return strings.t("steam.sizeOn").arg(bytes(game.size)).arg(d ? d.label : "Steam")
+    return strings.t("steam.sizeOn").arg(bytes(Library.fullSize(game, stSizes))).arg(d ? d.label : "Steam")
   }
 
   function setSteamTab(tab) {
+    stDeckOpen = false
+    stFilterOpen = false
     if (stTab === tab) return
     stTab = tab
     stGameId = ""
@@ -283,7 +484,7 @@ Panel {
   onOpenedChanged: {
     if (opened) resolveService()
     syncPreview()
-    if (!opened) { stSearching = false; stQuery = ""; return }
+    if (!opened) { stSearching = false; stQuery = ""; stDeckOpen = false; stFilterOpen = false; return }
     if (service) service.refreshMango()
     if (page !== "stats") themeColorsFile.reload()
     if (page === "steam" && stDeals && steamModel) steamModel.refreshDeals()
@@ -516,9 +717,13 @@ Panel {
     var list = [{ id: "page", count: pages.length }]
     if (page === "steam") {
       if (stPhase !== "ready") return list
-      list.push({ id: "st-top", count: 4 + (stDeals ? 2 : stSortOptions.length) }, { id: "st-search", count: 1 })
+      list.push({ id: "st-top", count: 4 + (stDeals ? 2 : stSortOptions.length) }, { id: "st-search", count: stFiltered ? 2 : 1 })
+      if (stChips.length) list.push({ id: "st-chips", count: stChips.length + 1 })
+      if (stFilterOpen) return list.concat(stCardRows)
       for (var s = 0; s < stGames.length; s++) list.push({ id: "st-game-" + s, count: 1 })
+      if (stFiltered && stGame) list.push({ id: "st-deck", count: 1 })
       if (stActions.length) list.push({ id: "st-actions", count: stActions.length })
+      if (stHasDlc) list.push({ id: "st-dlc", count: 1 })
       return list
     }
     if (page === "gamemode") {
@@ -591,18 +796,31 @@ Panel {
     var r = rowIndex(cursorRow)
     if (r < 0) { cursorRow = rows[0].id; cursorCol = 0; return }
     // Steam: right from a game goes to its buttons, left or up comes back.
+    // Inside the details: Deck badge, buttons, DLC header, top to bottom.
     if (page === "steam") {
-      if (cursorRow === "st-actions" && (dy < 0 || (dx < 0 && cursorCol === 0))) {
-        cursorRow = stIndex >= 0 ? "st-game-" + stIndex : "st-top"
+      var gameRow = stIndex >= 0 ? "st-game-" + stIndex : "st-top"
+      var deckRow = rowIndex("st-deck") >= 0
+      var detail = cursorRow === "st-deck" || cursorRow === "st-actions" || cursorRow === "st-dlc"
+      if (detail && dx < 0 && cursorCol === 0) { cursorRow = gameRow; cursorCol = 0; return }
+      if (cursorRow === "st-deck" && dy < 0) { cursorRow = gameRow; cursorCol = 0; return }
+      if (cursorRow === "st-deck" && dy > 0) {
+        if (stActions.length) { cursorRow = "st-actions"; cursorCol = 0 }
+        return
+      }
+      if (cursorRow === "st-actions" && dy < 0) { cursorRow = deckRow ? "st-deck" : gameRow; cursorCol = 0; return }
+      if (cursorRow === "st-actions" && dy > 0) {
+        if (stHasDlc) { cursorRow = "st-dlc"; cursorCol = 0 }
+        return
+      }
+      if (cursorRow === "st-dlc" && dy < 0) { cursorRow = stActions.length ? "st-actions" : deckRow ? "st-deck" : gameRow; cursorCol = 0; return }
+      if (cursorRow === "st-dlc" && dy > 0) return
+      if (cursorRow.indexOf("st-game-") === 0 && dx > 0 && (deckRow || stActions.length)) {
+        cursorRow = deckRow ? "st-deck" : "st-actions"
         cursorCol = 0
         return
       }
-      if (cursorRow === "st-actions" && dy > 0) return
-      if (cursorRow.indexOf("st-game-") === 0 && dx > 0 && stActions.length) {
-        cursorRow = "st-actions"
-        cursorCol = 0
-        return
-      }
+      // Down off the last game stays in the list.
+      if (cursorRow.indexOf("st-game-") === 0 && dy > 0 && Number(cursorRow.slice(8)) >= stGames.length - 1) return
     }
     if (dy !== 0) {
       var next = Math.max(0, Math.min(rows.length - 1, r + dy))
@@ -633,9 +851,14 @@ Panel {
     }
     else if (id.indexOf("st-game-") === 0) {
       selectGame(Number(id.slice(8)))
-      if (stActions.length) { cursorRow = "st-actions"; cursorCol = 0 }
+      if (stFiltered) { cursorRow = "st-deck"; cursorCol = 0 }
+      else if (stActions.length) { cursorRow = "st-actions"; cursorCol = 0 }
     }
-    else if (id === "st-search") startSearch()
+    else if (id === "st-search") { if (col === 1) openFilters(!stFilterOpen); else startSearch() }
+    else if (id === "st-chips") { if (col < stChips.length) removeChip(stChips[col]); else clearFilters() }
+    else if (id.indexOf("st-fc-") === 0) activateCard(id, col)
+    else if (id === "st-deck") openDeck()
+    else if (id === "st-dlc") stDlcOpen = !stDlcOpen
     else if (id === "st-actions") { if (stActions[col]) steamAction(stActions[col]) }
     else if (id === "gm-power") toggleGameMode()
     else if (id === "gm-auto") { if (gm) gm.setAuto(!gm.autoEnabled) }
@@ -737,7 +960,11 @@ Panel {
         root.moveCursor(dx, dy)
       }
       onActivateRequested: if (root.cursorActive) root.activateCursor()
-      onCloseRequested: root.close()
+      onCloseRequested: {
+        if (root.stFilterOpen) root.openFilters(false)
+        else if (root.stDeckOpen) root.stDeckOpen = false
+        else root.close()
+      }
       blocked: root.stSearching
       onTextKey: function(t, modifiers) { if (t === "/" && root.page === "steam" && root.stPhase === "ready") root.startSearch() }
       onTabRequested: function(direction) { root.switchPanel(direction) }
@@ -815,12 +1042,9 @@ Panel {
                   width: parent.width
                 }
 
-                Text {
-                  textFormat: Text.PlainText
+                Caption {
                   text: root.statusText
                   color: root.service && root.service.statsFailed && root.service.streaming ? Commons.Color.urgent : root.dimFg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
                   font.bold: true
                   elide: Text.ElideRight
                   width: parent.width
@@ -1054,13 +1278,9 @@ Panel {
                 visible: !root.mango.installed
                 implicitHeight: Math.max(missingText.implicitHeight, installButton.implicitHeight)
 
-                Text {
+                Caption {
                   id: missingText
-                  textFormat: Text.PlainText
                   text: strings.t("fps.missing")
-                  color: root.dimFg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
                   wrapMode: Text.WordWrap
                   anchors.left: parent.left
                   anchors.right: installButton.left
@@ -1068,16 +1288,13 @@ Panel {
                   anchors.verticalCenter: parent.verticalCenter
                 }
 
-                Button {
+                PillButton {
                   id: installButton
                   anchors.right: parent.right
                   anchors.verticalCenter: parent.verticalCenter
                   text: strings.t("fps.install")
                   iconText: ""
-                  bordered: true
                   foreground: root.fg
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.caption
                   hasCursor: root.cursorOn("install")
                   onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(installButton)
                   onClicked: if (root.service) root.service.installMango()
@@ -1114,38 +1331,28 @@ Panel {
                 onHovered: function(h) { if (h) root.point("graph", 0) }
               }
 
-              Text {
+              Caption {
                 width: parent.width
-                textFormat: Text.PlainText
                 text: strings.t("fps.launchHint")
-                color: root.dimFg
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
                 wrapMode: Text.WordWrap
               }
 
-              Button {
+              PillButton {
                 id: copyButton
                 text: root.copied ? strings.t("fps.copied") : strings.t("fps.copy")
                 iconText: root.copied ? "" : ""
-                bordered: true
                 foreground: root.fg
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
                 hasCursor: root.cursorOn("copy")
                 onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(copyButton)
                 onClicked: root.copyLaunchOption()
                 onHovered: function(h) { if (h) root.point("copy", 0) }
               }
 
-              Text {
+              Caption {
                 width: parent.width
                 visible: !!root.service && root.service.mangoFailed
-                textFormat: Text.PlainText
                 text: strings.t("fps.failed")
                 color: Commons.Color.urgent
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
                 font.bold: true
                 wrapMode: Text.WordWrap
               }
@@ -1197,30 +1404,23 @@ Panel {
                   width: parent.width
                 }
 
-                Text {
-                  textFormat: Text.PlainText
+                Caption {
                   text: root.gmStateLine
-                  color: root.dimFg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
                   wrapMode: Text.WordWrap
                   width: parent.width
                 }
               }
 
-              Button {
+              PillButton {
                 id: gmPower
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 text: strings.t(root.gm && root.gm.working ? "gm.wait" : root.gameOn ? "gm.restoreAll" : "gm.pauseTicked")
                 enabled: !!root.gm && !root.gm.working && !!root.gm.status && (root.gameOn || root.gm.tickedCount > 0)
                 selected: root.gameOn
-                bordered: true
                 // Pausing in yellow, bringing everything back in green.
                 foreground: root.gameOn ? root.stGreen : root.stYellow
                 accent: foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
                 hasCursor: root.cursorOn("gm-power")
                 onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(gmPower)
                 onClicked: root.toggleGameMode()
@@ -1253,17 +1453,13 @@ Panel {
               width: parent.width
               implicitHeight: Math.max(gmHeader.implicitHeight, gmAllSwitch.implicitHeight)
 
-              Text {
+              Caption {
                 id: gmHeader
                 anchors.left: parent.left
                 anchors.right: gmAllLabel.left
                 anchors.rightMargin: Style.spacing.sm
                 anchors.verticalCenter: parent.verticalCenter
-                textFormat: Text.PlainText
                 text: strings.t(root.gameOn ? "gm.headerOn" : "gm.headerOff")
-                color: root.dimFg
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
                 wrapMode: Text.WordWrap
               }
 
@@ -1341,25 +1537,17 @@ Panel {
               }
             }
 
-            Text {
+            Caption {
               visible: !!root.gm && !!root.gm.status && root.gmItems.length === 0
               width: parent.width
-              textFormat: Text.PlainText
               text: strings.t("gm.empty")
-              color: root.dimFg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
             }
 
             PanelSeparator { foreground: root.fg }
 
-            Text {
+            Caption {
               width: parent.width
-              textFormat: Text.PlainText
               text: strings.t("gm.footer")
-              color: root.dimFg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
             }
           }
@@ -1373,15 +1561,12 @@ Panel {
             implicitHeight: root.stPhase === "ready" ? Style.space(500) : stStatus.implicitHeight
             readonly property bool ready: root.stPhase === "ready"
 
-            Text {
+            Caption {
               id: stStatus
               visible: !steamPage.ready
               width: parent.width
-              textFormat: Text.PlainText
               text: strings.t("steam." + root.stPhase)
               color: root.stPhase === "failed" ? Commons.Color.urgent : root.dimFg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
             }
 
@@ -1399,8 +1584,8 @@ Panel {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
                 options: [
-                  { value: "installed", label: strings.t("steam.installed").arg(Commons.I18n.formatNumber(root.steamModel ? Library.countInstalled(root.steamModel.games, true, root.stQuery) : 0)) },
-                  { value: "other", label: strings.t("steam.notInstalled").arg(Commons.I18n.formatNumber(root.steamModel ? Library.countInstalled(root.steamModel.games, false, root.stQuery) : 0)) },
+                  { value: "installed", label: strings.t("steam.installed").arg(Commons.I18n.formatNumber(root.steamModel ? Library.countInstalled(root.steamModel.games, true, root.stQuery, root.stFilterFor(true)) : 0)) },
+                  { value: "other", label: strings.t("steam.notInstalled").arg(Commons.I18n.formatNumber(root.steamModel ? Library.countInstalled(root.steamModel.games, false, root.stQuery, root.stFilterFor(false)) : 0)) },
                   { value: "deals", label: root.steamModel && root.steamModel.deals
                       ? strings.t("steam.deals.count").arg(Commons.I18n.formatNumber(root.stDealList.length)) : strings.t("steam.deals") },
                   { value: "local", label: root.steamModel && root.steamModel.others
@@ -1426,33 +1611,24 @@ Panel {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.spacing.xs
 
-                Button {
+                PillButton {
                   text: "\u2212"
-                  bordered: true
                   foreground: root.fg
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.caption
                   enabled: root.stDealMin > 5
                   hasCursor: root.cursorOn("st-top", 4)
                   onClicked: if (root.steamModel) root.steamModel.setDealMin(root.stDealMin - 5)
                   onHovered: function(h) { if (h) root.point("st-top", 4) }
                 }
 
-                Text {
+                Caption {
                   anchors.verticalCenter: parent.verticalCenter
-                  textFormat: Text.PlainText
                   text: strings.t("steam.deals.min").arg(Commons.I18n.formatNumber(root.stDealMin))
                   color: root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
                 }
 
-                Button {
+                PillButton {
                   text: "+"
-                  bordered: true
                   foreground: root.fg
-                  fontFamily: root.fontFamily
-                  fontSize: Style.font.caption
                   enabled: root.stDealMin < 100
                   hasCursor: root.cursorOn("st-top", 5)
                   onClicked: if (root.steamModel) root.steamModel.setDealMin(root.stDealMin + 5)
@@ -1485,35 +1661,27 @@ Panel {
               anchors.left: parent.left
               anchors.top: stTop.bottom
               anchors.topMargin: Style.space(10)
-              width: stList.width - Style.space(8)
+              width: stList.width - Style.space(8) - (stFilterButton.visible ? stFilterButton.width + Style.space(6) : 0)
               implicitHeight: Style.space(34)
               bordered: true
               foreground: root.fg
               current: root.stSearching
               hasCursor: root.cursorOn("st-search")
 
-              Text {
+              Caption {
                 id: stSearchIcon
                 anchors.left: parent.left
                 anchors.leftMargin: Style.space(10)
                 anchors.verticalCenter: parent.verticalCenter
-                textFormat: Text.PlainText
                 text: "\uf002"
-                color: root.dimFg
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
               }
 
-              Text {
+              Caption {
                 anchors.left: stSearchInput.left
                 anchors.right: stSearchInput.right
                 anchors.verticalCenter: parent.verticalCenter
                 visible: stSearchInput.text === ""
-                textFormat: Text.PlainText
                 text: strings.t("steam.search")
-                color: root.dimFg
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
                 elide: Text.ElideRight
               }
 
@@ -1568,12 +1736,69 @@ Panel {
               }
             }
 
+            // Filters: one button beside the search opens the card; what's in
+            // use shows as chips under it, each removable.
+            PillButton {
+              id: stFilterButton
+              visible: steamPage.ready && root.stFiltered
+              anchors.left: stSearch.right
+              anchors.leftMargin: Style.space(6)
+              anchors.verticalCenter: stSearch.verticalCenter
+              height: stSearch.height
+              iconText: "\uf0b0"
+              text: root.stActiveFilters > 0 ? strings.t("steam.filter.buttonOn").arg(Commons.I18n.formatNumber(root.stActiveFilters))
+                : strings.t("steam.filter.button")
+              tooltipText: strings.t("steam.filter.tip")
+              selected: root.stFilterOpen
+              foreground: root.stActiveFilters > 0 ? Commons.Color.accent : root.fg
+              accent: Commons.Color.accent
+              hasCursor: root.cursorOn("st-search", 1)
+              onClicked: root.openFilters(!root.stFilterOpen)
+              onHovered: function(h) { if (h) root.point("st-search", 1) }
+            }
+
+            Flow {
+              id: stChipRow
+              visible: steamPage.ready && root.stChips.length > 0
+              anchors.left: parent.left
+              anchors.top: stSearch.bottom
+              anchors.topMargin: Style.space(8)
+              width: stList.width - Style.space(8)
+              spacing: Style.space(6)
+
+              Repeater {
+                model: root.stChips.length
+
+                Badge {
+                  required property int index
+                  readonly property var chip: root.stChips[index] || ({ group: "", value: "" })
+                  text: root.chipLabel(chip)
+                  tint: root.chipColor(chip)
+                  clickable: true
+                  trailing: "\uf00d"
+                  tooltip: strings.t("steam.filter.remove")
+                  hasCursor: root.cursorOn("st-chips", index)
+                  onClicked: root.removeChip(chip)
+                  onHovered: function(h) { if (h) root.point("st-chips", index) }
+                }
+              }
+
+              Badge {
+                text: strings.t("steam.filter.clear")
+                tint: root.dimFg
+                clickable: true
+                hasCursor: root.cursorOn("st-chips", root.stChips.length)
+                onClicked: root.clearFilters()
+                onHovered: function(h) { if (h) root.point("st-chips", root.stChips.length) }
+              }
+            }
+
             // Indexed, so a new reading updates the rows in place.
             ListView {
               id: stList
               visible: steamPage.ready
               anchors.left: parent.left
-              anchors.top: stSearch.bottom
+              anchors.top: stChipRow.visible ? stChipRow.bottom : stSearch.bottom
               anchors.topMargin: Style.space(8)
               anchors.bottom: stDriveBox.top
               anchors.bottomMargin: Style.space(10)
@@ -1591,28 +1816,27 @@ Panel {
               }
 
               // A new order or list keeps the picked game in view.
-              readonly property string order: root.stSortShown + ":" + root.stTab + ":" + root.stQuery
+              readonly property string order: root.stSortShown + ":" + root.stTab + ":" + root.stQuery + ":" + JSON.stringify(root.stFilterFor(root.stInstalled))
               onOrderChanged: Qt.callLater(function() { if (root.stIndex >= 0) stList.positionViewAtIndex(root.stIndex, ListView.Contain) })
               Component.onCompleted: if (root.stIndex > 0) positionViewAtIndex(root.stIndex, ListView.Center)
             }
 
-            Text {
+            Caption {
               visible: steamPage.ready && root.stGames.length === 0
               anchors.left: stList.left
               anchors.right: stList.right
               anchors.top: stList.top
-              textFormat: Text.PlainText
               text: root.stLocal ? (!root.steamModel || root.steamModel.othersPhase !== "ready"
                     ? strings.t("steam.local." + (root.steamModel ? root.steamModel.othersPhase : "reading"))
                     : strings.t(root.stQuery.trim() ? "steam.noMatch" : "steam.local.none"))
-                : !root.stDeals ? strings.t(root.stQuery.trim() ? "steam.noMatch" : root.stInstalled ? "steam.noneInstalled" : "steam.allInstalled")
+                : !root.stDeals ? strings.t(root.stQuery.trim() ? "steam.noMatch"
+                    : root.stActiveFilters > 0 ? "steam.filter.none"
+                    : root.stInstalled ? "steam.noneInstalled" : "steam.allInstalled")
                 : !root.steamModel || root.steamModel.dealsPhase !== "ready" ? strings.t("steam.deals." + (root.steamModel ? root.steamModel.dealsPhase : "reading"))
                 : root.stQuery.trim() ? strings.t("steam.noMatch")
                 : strings.t(root.steamModel.deals.wishlistOk ? "steam.deals.none" : "steam.deals.noneNoWishlist")
               color: root.steamModel && (root.stDeals && root.steamModel.dealsPhase === "failed"
                 || root.stLocal && root.steamModel.othersPhase === "failed") ? Commons.Color.urgent : root.dimFg
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
             }
 
@@ -1638,13 +1862,14 @@ Panel {
                 path: root.stLocal ? "" : stDetails.game.cover || ""
               }
 
+              // Name, status badges, then label / value facts.
               Column {
                 id: stInfo
                 anchors.left: stCover.right
-                anchors.leftMargin: root.stDeals ? 0 : Style.space(14)
+                anchors.leftMargin: root.stDeals ? 0 : Style.space(16)
                 anchors.right: parent.right
                 anchors.top: parent.top
-                spacing: Style.space(8)
+                spacing: Style.space(10)
 
                 Text {
                   width: parent.width
@@ -1659,90 +1884,120 @@ Panel {
                   elide: Text.ElideRight
                 }
 
+                // Steam games: platform, SteamOS rating (opens the full report), favorite, update.
+                Flow {
+                  width: parent.width
+                  visible: root.stFiltered
+                  spacing: Style.space(6)
+
+                  Badge {
+                    visible: text !== ""
+                    text: root.stFiltered ? root.platformBadge(stDetails.game) : ""
+                    tint: root.platformColor(stDetails.game)
+                  }
+
+                  Badge {
+                    text: strings.t("steam.badge.steamos." + (stDetails.game.steamos || "unknown"))
+                    tint: root.runColor(stDetails.game.steamos || "unknown")
+                    clickable: true
+                    trailing: ""
+                    tooltip: strings.t("steam.deck.open")
+                    hasCursor: root.cursorOn("st-deck")
+                    onClicked: root.openDeck()
+                    onHovered: function(h) { if (h) root.point("st-deck", 0) }
+                  }
+
+                  Badge {
+                    visible: !!stDetails.game.favorite
+                    text: "  " + strings.t("steam.badge.favorite")
+                    tint: root.stYellow
+                  }
+
+                  Badge {
+                    visible: text !== ""
+                    text: root.stFiltered && stDetails.game.update ? "  " + root.updateText(stDetails.game) : ""
+                    tint: root.stYellow
+                  }
+                }
+
+                Column {
+                  width: parent.width
+                  visible: root.stFiltered
+                  spacing: Style.space(8)
+
+                  Fact {
+                    width: parent.width
+                    label: strings.t("steam.fact.played")
+                    value: root.stFiltered ? root.playedValue(stDetails.game) : ""
+                  }
+
+                  Fact {
+                    width: parent.width
+                    visible: !!stDetails.game.installed
+                    label: strings.t("steam.fact.size")
+                    value: stDetails.game.installed ? root.sizeLine(stDetails.game) : ""
+                    sub: stDetails.game.installed ? root.sizeParts(stDetails.game) : ""
+                  }
+
+                  Fact {
+                    width: parent.width
+                    visible: value !== ""
+                    label: strings.t("steam.fact.runs")
+                    value: root.stFiltered ? root.runsWith(stDetails.game) : ""
+                  }
+
+                  Fact {
+                    width: parent.width
+                    visible: !!stDetails.game.installed && value !== ""
+                    label: strings.t("steam.fact.build")
+                    value: stDetails.game.build || ""
+                    sub: stDetails.game.installed && stDetails.game.updated > 0 ? strings.t("steam.updated").arg(root.whenText(stDetails.game.updated)) : ""
+                  }
+                }
+
+                // Deals: the price, and whether it's yours or wished for.
                 Text {
                   width: parent.width
                   visible: root.stDeals
                   textFormat: Text.PlainText
-                  text: root.dealPrice(stDetails.game)
-                    + (stDetails.game.initial ? "  " + strings.t("steam.deals.was").arg(stDetails.game.initial) : "")
+                  text: root.stDeals ? root.dealPrice(stDetails.game)
+                    + (stDetails.game.initial ? "  " + strings.t("steam.deals.was").arg(stDetails.game.initial) : "") : ""
                   color: root.stGreen
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
                   wrapMode: Text.WordWrap
                 }
 
-                Text {
+                Caption {
                   width: parent.width
                   visible: root.stDeals && (!!stDetails.game.owned || !!stDetails.game.wishlist)
-                  textFormat: Text.PlainText
-                  text: strings.t(stDetails.game.owned ? "steam.deals.ownedLine" : "steam.deals.wishlistLine")
-                  color: root.dimFg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
+                  text: root.stDeals ? strings.t(stDetails.game.owned ? "steam.deals.ownedLine" : "steam.deals.wishlistLine") : ""
                   wrapMode: Text.WordWrap
                 }
 
-                Text {
+                // Other games: the entry's comment and where it lives.
+                Caption {
                   width: parent.width
                   visible: root.stLocal && !!stDetails.game.comment
-                  textFormat: Text.PlainText
                   text: stDetails.game.comment || ""
                   color: root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
                   wrapMode: Text.WordWrap
                 }
 
-                Text {
+                Caption {
                   width: parent.width
                   visible: root.stLocal
-                  textFormat: Text.PlainText
                   text: stDetails.game.size > 0 ? strings.t("steam.local.sizeIn").arg(root.bytes(stDetails.game.size)).arg(stDetails.game.folder || "")
                     : strings.t("steam.local.fromMenu")
-                  color: root.dimFg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
                   wrapMode: Text.WrapAnywhere
-                }
-
-                Text {
-                  width: parent.width
-                  visible: !root.stDeals && !root.stLocal
-                  textFormat: Text.PlainText
-                  text: root.playedLine(stDetails.game)
-                  color: root.dimFg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  wrapMode: Text.WordWrap
-                }
-
-                Text {
-                  width: parent.width
-                  visible: !root.stDeals && !root.stLocal && !!stDetails.game.installed
-                  textFormat: Text.PlainText
-                  text: root.sizeLine(stDetails.game)
-                  color: root.dimFg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  wrapMode: Text.WordWrap
-                }
-
-                Text {
-                  width: parent.width
-                  visible: !root.stDeals && !root.stLocal
-                  textFormat: Text.PlainText
-                  text: strings.t("steam.deck").arg(strings.t("steam.deck." + stDetails.game.deck))
-                  color: root.deckColor(stDetails.game.deck)
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  wrapMode: Text.WordWrap
                 }
               }
 
               Column {
+                id: stActionsCol
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.top: root.stDeals || root.stLocal && stInfo.height > stCover.height ? stInfo.bottom : stCover.bottom
+                anchors.top: root.stDeals || stInfo.height > stCover.height ? stInfo.bottom : stCover.bottom
                 anchors.topMargin: Style.space(14)
                 spacing: Style.space(8)
 
@@ -1753,7 +2008,7 @@ Panel {
                   Repeater {
                     model: root.stActions.length
 
-                    Button {
+                    PillButton {
                       required property int index
                       readonly property string action: root.stActions[index] || ""
                       readonly property bool iconOnly: action === "folder" || action === "options"
@@ -1763,12 +2018,9 @@ Panel {
                         : action === "options" && stDetails.game.launchOptions
                           ? strings.t("steam.launchOptions").arg(stDetails.game.launchOptions)
                           : strings.t("steam.action." + action)
-                      iconText: ({ run: "\uf04b", install: "\uf019", uninstall: "\uf1f8", folder: "\uf07b", options: "\uf120", store: "\uf1b6" })[action] || ""
-                      bordered: true
+                      iconText: ({ run: "", install: "", uninstall: "", folder: "", options: "", store: "" })[action] || ""
                       foreground: tint
                       accent: tint
-                      fontFamily: root.fontFamily
-                      fontSize: Style.font.caption
                       hasCursor: root.cursorOn("st-actions", index)
                       onClicked: root.steamAction(action)
                       onHovered: function(h) { if (h) root.point("st-actions", index) }
@@ -1776,16 +2028,428 @@ Panel {
                   }
                 }
 
-                Text {
+                Caption {
                   width: parent.width
-                  textFormat: Text.PlainText
                   visible: text !== ""
                   text: root.stLocal ? "" : root.stDeals ? (stDetails.game.discount >= 100 && !stDetails.game.owned ? strings.t("steam.deals.claimHint") : "")
                     : strings.t(stDetails.game.installed ? "steam.uninstallHint" : "steam.installHint")
-                  color: root.dimFg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
                   wrapMode: Text.WordWrap
+                }
+              }
+
+              // DLC: a folded header; open, the list fills the rest.
+              Item {
+                visible: root.stFiltered && !!stDetails.game.dlc && stDetails.game.dlc.length > 0
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: stActionsCol.bottom
+                anchors.topMargin: Style.space(12)
+                anchors.bottom: parent.bottom
+
+                CursorSurface {
+                  id: stDlcHeader
+                  width: parent.width
+                  implicitHeight: Style.space(30)
+                  bordered: true
+                  foreground: root.fg
+                  hasCursor: root.cursorOn("st-dlc")
+
+                  Caption {
+                    id: stDlcChevron
+                    anchors.left: parent.left
+                    anchors.leftMargin: Style.space(10)
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.stDlcOpen ? "" : ""
+                  }
+
+                  Caption {
+                    anchors.left: stDlcChevron.right
+                    anchors.leftMargin: Style.space(8)
+                    anchors.right: parent.right
+                    anchors.rightMargin: Style.space(10)
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.stFiltered && stDetails.game.dlc ? root.dlcHeader(stDetails.game) : ""
+                    color: root.fg
+                    font.bold: true
+                    elide: Text.ElideRight
+                  }
+
+                  MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.stDlcOpen = !root.stDlcOpen
+                  }
+
+                  HoverHandler {
+                    onHoveredChanged: if (hovered) root.point("st-dlc", 0)
+                  }
+                }
+
+                ListView {
+                  id: stDlcList
+                  visible: root.stDlcOpen
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.top: stDlcHeader.bottom
+                  anchors.topMargin: Style.space(8)
+                  anchors.bottom: parent.bottom
+                  clip: true
+                  spacing: Style.space(4)
+                  boundsBehavior: Flickable.StopAtBounds
+                  model: root.stDlcOpen && root.stFiltered && stDetails.game.dlc ? stDetails.game.dlc.length : 0
+                  ScrollBar.vertical: ScrollBar { policy: stDlcList.contentHeight > stDlcList.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+
+                  delegate: Item {
+                    required property int index
+                    readonly property var dlc: stDetails.game.dlc[index] || ({ name: "", state: "missing" })
+                    width: stDlcList.width - Style.space(8)
+                    height: dlcName.implicitHeight
+
+                    Caption {
+                      id: dlcName
+                      anchors.left: parent.left
+                      anchors.leftMargin: Style.space(10)
+                      anchors.right: dlcState.left
+                      anchors.rightMargin: Style.space(8)
+                      text: parent.dlc.name
+                      color: parent.dlc.state === "missing" ? root.dimFg : root.fg
+                      elide: Text.ElideRight
+                    }
+
+                    Caption {
+                      id: dlcState
+                      anchors.right: parent.right
+                      text: strings.t("steam.dlc." + parent.dlc.state)
+                      color: root.dlcColor(parent.dlc.state)
+                    }
+                  }
+                }
+              }
+            }
+
+            // A click outside the filters card closes it.
+            MouseArea {
+              visible: root.stFilterOpen
+              z: 19
+              anchors.fill: parent
+              onClicked: root.openFilters(false)
+            }
+
+            // The filters card: what it runs on, played or not, favorites and
+            // updates. Every choice applies at once and shows its count.
+            Rectangle {
+              id: stFilterCard
+              visible: steamPage.ready && root.stFilterOpen
+              z: 20
+              anchors.left: parent.left
+              anchors.top: stSearch.bottom
+              anchors.topMargin: Style.space(6)
+              width: Math.max(stList.width, Style.space(340))
+              height: stCardBody.implicitHeight + Style.space(28)
+              color: Commons.Color.popups.background
+              border.color: Util.alpha(root.fg, 0.3)
+              border.width: Math.max(1, Style.space(1))
+              radius: Style.cornerRadius
+
+              MouseArea { anchors.fill: parent }
+
+              Column {
+                id: stCardBody
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: Style.space(14)
+                spacing: Style.space(14)
+
+                Column {
+                  width: parent.width
+                  spacing: Style.space(6)
+
+                  CardLabel { text: strings.t("steam.filter.runsTitle"); hint: strings.t("steam.filter.runsHint") }
+
+                  Flow {
+                    width: parent.width
+                    spacing: Style.space(6)
+
+                    Repeater {
+                      model: Library.RUNS.length
+
+                      PillButton {
+                        required property int index
+                        readonly property string run: Library.RUNS[index]
+                        readonly property bool on: root.stFilterRuns.indexOf(run) >= 0
+                        text: root.facetText(root.runLabel(run), root.stFacets ? root.stFacets.runs[run] : 0)
+                        iconText: on ? "\uf14a" : "\uf096"
+                        selected: on
+                        foreground: root.runColor(run)
+                        accent: root.runColor(run)
+                        hasCursor: root.cursorOn("st-fc-runs", index)
+                        onClicked: root.toggleRun(run)
+                        onHovered: function(h) { if (h) root.point("st-fc-runs", index) }
+                      }
+                    }
+                  }
+                }
+
+                Column {
+                  width: parent.width
+                  spacing: Style.space(6)
+
+                  CardLabel { text: strings.t("steam.filter.playedTitle") }
+
+                  Row {
+                    spacing: Style.space(6)
+
+                    Repeater {
+                      model: Library.PLAYED.length
+
+                      PillButton {
+                        required property int index
+                        readonly property string value: Library.PLAYED[index]
+                        text: root.facetText(strings.t("steam.filter.played." + value), root.stFacets ? root.stFacets.played[value] : 0)
+                        selected: root.stFilterPlayed === value
+                        foreground: root.stFilterPlayed === value ? Commons.Color.accent : root.fg
+                        accent: Commons.Color.accent
+                        hasCursor: root.cursorOn("st-fc-played", index)
+                        onClicked: root.setPlayed(value)
+                        onHovered: function(h) { if (h) root.point("st-fc-played", index) }
+                      }
+                    }
+                  }
+                }
+
+                Column {
+                  width: parent.width
+                  spacing: Style.space(6)
+
+                  CardLabel { text: strings.t("steam.filter.showTitle") }
+
+                  Row {
+                    spacing: Style.space(6)
+
+                    PillButton {
+                      text: root.facetText(strings.t("steam.filter.favorites"), root.stFacets ? root.stFacets.favorites : 0)
+                      iconText: root.stFilterFav ? "\uf005" : "\uf006"
+                      selected: root.stFilterFav
+                      foreground: root.stFilterFav ? root.stYellow : root.fg
+                      accent: root.stYellow
+                      hasCursor: root.cursorOn("st-fc-show", 0)
+                      onClicked: root.toggleFav()
+                      onHovered: function(h) { if (h) root.point("st-fc-show", 0) }
+                    }
+
+                    PillButton {
+                      visible: root.stInstalled
+                      text: root.facetText(strings.t("steam.filter.updates"), root.stFacets ? root.stFacets.updates : 0)
+                      iconText: "\uf021"
+                      selected: root.stFilterUpdates
+                      foreground: root.stFilterUpdates ? root.stYellow : root.fg
+                      accent: root.stYellow
+                      hasCursor: root.cursorOn("st-fc-show", 1)
+                      onClicked: root.toggleUpdates()
+                      onHovered: function(h) { if (h) root.point("st-fc-show", 1) }
+                    }
+                  }
+                }
+
+                Rectangle { width: parent.width; height: Math.max(1, Style.space(1)); color: Util.alpha(root.fg, 0.12) }
+
+                // How many games show, then Clear and Done.
+                Item {
+                  width: parent.width
+                  height: stCardDone.implicitHeight
+
+                  Caption {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: strings.tn("steam.filter.shown", root.stGames.length).arg(Commons.I18n.formatNumber(root.stGames.length))
+                  }
+
+                  Row {
+                    anchors.right: parent.right
+                    spacing: Style.space(6)
+
+                    Button {
+                      text: strings.t("steam.filter.clear")
+                      enabled: root.stActiveFilters > 0
+                      foreground: root.stActiveFilters > 0 ? root.fg : root.dimFg
+                      fontFamily: root.fontFamily
+                      fontSize: Style.font.caption
+                      hasCursor: root.cursorOn("st-fc-foot", 0)
+                      onClicked: root.clearFilters()
+                      onHovered: function(h) { if (h) root.point("st-fc-foot", 0) }
+                    }
+
+                    PillButton {
+                      id: stCardDone
+                      text: strings.t("steam.filter.done")
+                      foreground: Commons.Color.accent
+                      accent: Commons.Color.accent
+                      hasCursor: root.cursorOn("st-fc-foot", 1)
+                      onClicked: root.openFilters(false)
+                      onHovered: function(h) { if (h) root.point("st-fc-foot", 1) }
+                    }
+                  }
+                }
+              }
+            }
+
+            // The full Steam Deck report, over the details.
+            Rectangle {
+              id: stDeckCard
+              visible: steamPage.ready && root.stDeckOpen
+              z: 10
+              anchors.fill: stDetails
+              anchors.leftMargin: -Style.space(8)
+              color: Commons.Color.popups.background
+              border.color: Util.alpha(root.fg, 0.25)
+              border.width: Math.max(1, Style.space(1))
+              radius: Style.cornerRadius
+              readonly property var report: root.steamModel ? root.steamModel.deckReport : null
+              readonly property bool ready: !!report && !!root.stGame && report.id === root.stGame.id
+
+              // Clicks stay on the card.
+              MouseArea { anchors.fill: parent }
+
+              Text {
+                id: stDeckTitle
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(14)
+                anchors.right: stDeckClose.left
+                anchors.rightMargin: Style.space(8)
+                anchors.verticalCenter: stDeckClose.verticalCenter
+                textFormat: Text.PlainText
+                text: strings.t("steam.deck.title").arg(root.stGame ? root.stGame.name : "")
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+                elide: Text.ElideRight
+              }
+
+              Button {
+                id: stDeckClose
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(8)
+                anchors.top: parent.top
+                anchors.topMargin: Style.space(8)
+                iconText: ""
+                tooltipText: strings.t("steam.deck.close")
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: root.stDeckOpen = false
+              }
+
+              Caption {
+                visible: !stDeckCard.ready || stDeckCard.report.none
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: stDeckClose.bottom
+                anchors.margins: Style.space(14)
+                text: !stDeckCard.ready ? strings.t(root.steamModel && root.steamModel.deckPhase === "failed" ? "steam.deck.failed" : "steam.deck.reading")
+                  : strings.t("steam.deck.none")
+                wrapMode: Text.WordWrap
+              }
+
+              Flickable {
+                id: stDeckFlick
+                visible: stDeckCard.ready && !stDeckCard.report.none
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: stDeckClose.bottom
+                anchors.topMargin: Style.space(8)
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: Style.space(10)
+                anchors.leftMargin: Style.space(14)
+                anchors.rightMargin: Style.space(10)
+                clip: true
+                contentHeight: stDeckBody.implicitHeight
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar { policy: stDeckFlick.contentHeight > stDeckFlick.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+
+                Column {
+                  id: stDeckBody
+                  width: stDeckFlick.width - Style.space(10)
+                  spacing: Style.space(14)
+                  readonly property var report: stDeckCard.ready && !stDeckCard.report.none ? stDeckCard.report : null
+
+                  Caption {
+                    width: parent.width
+                    visible: text !== ""
+                    text: stDeckBody.report ? root.deckTestedLine(stDeckBody.report) : ""
+                    wrapMode: Text.WordWrap
+                  }
+
+                  Repeater {
+                    model: stDeckBody.report ? ["steamos", "deck", "machine"] : []
+
+                    Column {
+                      required property var modelData
+                      readonly property var results: stDeckBody.report.results[modelData] || []
+                      width: stDeckBody.width
+                      spacing: Style.space(5)
+
+                      Caption {
+                        width: parent.width
+                        text: root.deckSectionTitle(modelData, stDeckBody.report)
+                        color: root.deckSectionColor(modelData, stDeckBody.report)
+                        font.bold: true
+                      }
+
+                      Repeater {
+                        model: parent.results.length
+
+                        Item {
+                          required property int index
+                          readonly property var test: parent.results[index] || ({ result: "", kind: "note" })
+                          width: stDeckBody.width
+                          height: Math.max(testIcon.implicitHeight, testText.implicitHeight)
+
+                          Caption {
+                            id: testIcon
+                            width: Style.space(18)
+                            text: ({ pass: "", warning: "", fail: "", note: "" })[parent.test.kind] || ""
+                            color: root.deckKindColor(parent.test.kind)
+                          }
+
+                          Caption {
+                            id: testText
+                            anchors.left: testIcon.right
+                            anchors.right: parent.right
+                            text: strings.t("deck.result." + parent.test.result, Library.humanize(parent.test.result))
+                            color: root.fg
+                            wrapMode: Text.WordWrap
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  Column {
+                    width: parent.width
+                    visible: !!stDeckBody.report && stDeckBody.report.config.length > 0
+                    spacing: Style.space(5)
+
+                    Caption {
+                      text: strings.t("steam.deck.config")
+                      color: root.fg
+                      font.bold: true
+                    }
+
+                    Repeater {
+                      model: stDeckBody.report ? stDeckBody.report.config.length : 0
+
+                      Fact {
+                        required property int index
+                        readonly property var flag: stDeckBody.report.config[index] || ({ key: "", value: "" })
+                        width: stDeckBody.width
+                        labelWidth: Math.round(stDeckBody.width * 0.62)
+                        label: strings.t("deck.flag." + flag.key, Library.humanize(flag.key))
+                        value: root.deckFlagValue(flag.key, flag.value)
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -1800,6 +2464,28 @@ Panel {
               spacing: Style.space(8)
 
               PanelSeparator { foreground: root.fg }
+
+              // Whether Steam is running, and the account on it.
+              Row {
+                id: stStatusRow
+                visible: !!root.steamModel && !!root.steamModel.status
+                spacing: Style.space(6)
+                readonly property bool running: !!root.steamModel && !!root.steamModel.status && root.steamModel.status.running
+
+                Rectangle {
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(8)
+                  height: width
+                  radius: width / 2
+                  color: stStatusRow.running ? root.stGreen : root.stYellow
+                }
+
+                Caption {
+                  text: !stStatusRow.visible ? ""
+                    : stStatusRow.running && root.steamModel.status.persona ? strings.t("steam.status.runningAs").arg(root.steamModel.status.persona)
+                    : strings.t(stStatusRow.running ? "steam.status.running" : "steam.status.stopped")
+                }
+              }
 
               Row {
                 id: stDriveRow
@@ -1855,13 +2541,9 @@ Panel {
       anchors.verticalCenter: parent.verticalCenter
     }
 
-    Text {
+    Caption {
       visible: text !== ""
-      textFormat: Text.PlainText
       text: fold.open ? fold.hint : fold.summary
-      color: root.dimFg
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
       elide: Text.ElideRight
       horizontalAlignment: Text.AlignRight
       anchors.left: foldHeader.right
@@ -1871,13 +2553,9 @@ Panel {
       anchors.verticalCenter: parent.verticalCenter
     }
 
-    Text {
+    Caption {
       id: foldChevron
-      textFormat: Text.PlainText
       text: fold.open ? "\uf077" : "\uf078"
-      color: root.dimFg
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
       anchors.right: parent.right
       anchors.rightMargin: Style.space(6)
       anchors.verticalCenter: parent.verticalCenter
@@ -1938,13 +2616,9 @@ Panel {
       onHoveredChanged: if (hovered) root.point(groupTitle.rowId, 0)
     }
 
-    Text {
+    Caption {
       id: groupChevron
-      textFormat: Text.PlainText
       text: groupTitle.open ? "\uf078" : "\uf054"
-      color: root.dimFg
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
       width: Style.space(14)
       anchors.left: parent.left
       anchors.leftMargin: Style.spacing.sm + Style.space(2)
@@ -1971,13 +2645,9 @@ Panel {
         width: parent.width
       }
 
-      Text {
-        textFormat: Text.PlainText
+      Caption {
         visible: groupTitle.summary !== ""
         text: groupTitle.summary
-        color: root.dimFg
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
         wrapMode: Text.WordWrap
         width: parent.width
       }
@@ -2003,14 +2673,10 @@ Panel {
     property var drive: null
     spacing: Style.space(4)
 
-    Text {
+    Caption {
       width: parent.width
-      textFormat: Text.PlainText
       text: driveCell.drive ? strings.t("steam.drive").arg(driveCell.drive.label)
         .arg(root.bytes(driveCell.drive.free)).arg(root.bytes(driveCell.drive.total)) : ""
-      color: root.dimFg
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
       elide: Text.ElideRight
     }
 
@@ -2030,6 +2696,150 @@ Panel {
   }
 
   // A game's cover from Steam's own cache, or a gamepad when Steam has none.
+  // Small text in the panel's font, dim unless it says otherwise.
+  component Caption: Text {
+    textFormat: Text.PlainText
+    color: root.dimFg
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+  }
+
+  // A bordered button in the panel's font at caption size.
+  component PillButton: Button {
+    bordered: true
+    fontFamily: root.fontFamily
+    fontSize: Style.font.caption
+  }
+
+  // A small tinted pill in the details: platform, Deck, favorite, update.
+  // A clickable one gets a trailing chevron and the panel cursor.
+  component Badge: Rectangle {
+    id: badge
+    property string text: ""
+    property color tint: root.fg
+    property bool clickable: false
+    property string trailing: ""
+    property string tooltip: ""
+    property bool hasCursor: false
+    signal clicked()
+    signal hovered(bool h)
+    readonly property bool hot: hasCursor || badgeHover.hovered
+    implicitWidth: badgeRow.implicitWidth + Style.space(20)
+    implicitHeight: badgeRow.implicitHeight + Style.space(8)
+    radius: height / 2
+    color: Util.alpha(tint, hot && clickable ? 0.28 : 0.14)
+    border.color: Util.alpha(tint, hot && clickable ? 0.9 : 0.45)
+    border.width: Math.max(1, Style.space(1))
+
+    Row {
+      id: badgeRow
+      anchors.centerIn: parent
+      spacing: Style.space(6)
+
+      Caption {
+        text: badge.text
+        color: badge.tint
+        font.bold: true
+      }
+
+      Text {
+        visible: badge.trailing !== ""
+        anchors.verticalCenter: parent.verticalCenter
+        textFormat: Text.PlainText
+        text: badge.trailing
+        color: badge.tint
+        font.family: root.fontFamily
+        font.pixelSize: Math.round(Style.font.caption * 0.8)
+      }
+    }
+
+    HoverHandler {
+      id: badgeHover
+      enabled: badge.clickable
+      cursorShape: Qt.PointingHandCursor
+      onHoveredChanged: badge.hovered(hovered)
+    }
+
+    TapHandler {
+      enabled: badge.clickable
+      onTapped: badge.clicked()
+    }
+
+    PanelToolTip {
+      visible: badge.tooltip !== "" && badgeHover.hovered
+      text: badge.tooltip
+    }
+  }
+
+  // A section title in the filters card, with an optional dim hint after it.
+  component CardLabel: Text {
+    property string hint: ""
+    width: parent ? parent.width : 0
+    textFormat: Text.PlainText
+    text: ""
+    color: root.fg
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+    font.bold: true
+    wrapMode: Text.WordWrap
+
+    Text {
+      visible: parent.hint !== ""
+      anchors.left: parent.left
+      anchors.leftMargin: parent.contentWidth + Style.space(8)
+      anchors.right: parent.right
+      anchors.baseline: parent.baseline
+      textFormat: Text.PlainText
+      text: parent.hint
+      color: root.dimFg
+      font.family: root.fontFamily
+      font.pixelSize: Math.round(Style.font.caption * 0.9)
+      elide: Text.ElideRight
+    }
+  }
+
+  // One label / value fact, with an optional smaller line under the value.
+  component Fact: Item {
+    id: fact
+    property string label: ""
+    property string value: ""
+    property string sub: ""
+    property int labelWidth: Style.space(78)
+    implicitHeight: Math.max(factLabel.implicitHeight, factValue.implicitHeight + (factSub.visible ? factSub.implicitHeight + Style.space(2) : 0))
+
+    Caption {
+      id: factLabel
+      width: fact.labelWidth - Style.space(8)
+      text: fact.label
+      wrapMode: Text.WordWrap
+    }
+
+    Caption {
+      id: factValue
+      anchors.left: parent.left
+      anchors.leftMargin: fact.labelWidth
+      anchors.right: parent.right
+      text: fact.value
+      color: root.fg
+      wrapMode: Text.WordWrap
+    }
+
+    Text {
+      id: factSub
+      visible: fact.sub !== ""
+      anchors.left: factValue.left
+      anchors.right: parent.right
+      anchors.top: factValue.bottom
+      anchors.topMargin: Style.space(2)
+      textFormat: Text.PlainText
+      text: fact.sub
+      color: root.dimFg
+      font.family: root.fontFamily
+      font.pixelSize: Math.round(Style.font.caption * 0.9)
+      wrapMode: Text.WordWrap
+    }
+  }
+
   component Cover: Rectangle {
     id: coverBox
     property string path: ""
@@ -2099,25 +2909,40 @@ Panel {
       anchors.verticalCenter: parent.verticalCenter
       spacing: Style.space(2)
 
-      Text {
+      Item {
         width: parent.width
-        textFormat: Text.PlainText
-        text: gameRow.game.name
-        color: root.fg
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-        font.bold: true
-        elide: Text.ElideRight
+        height: rowName.implicitHeight
+
+        Text {
+          id: rowName
+          anchors.left: parent.left
+          anchors.right: rowBadge.visible ? rowBadge.left : parent.right
+          anchors.rightMargin: rowBadge.visible ? Style.space(6) : 0
+          textFormat: Text.PlainText
+          text: gameRow.game.name
+          color: root.fg
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          font.bold: true
+          elide: Text.ElideRight
+        }
+
+        // A favorite's star and a waiting update.
+        Caption {
+          id: rowBadge
+          anchors.right: parent.right
+          anchors.verticalCenter: rowName.verticalCenter
+          visible: root.stFiltered && text !== ""
+          text: !root.stFiltered ? "" : (gameRow.game.update ? "\uf021" + (gameRow.game.update === "downloading" ? " " + Commons.I18n.formatNumber(gameRow.game.progress) + "%" : "") : "")
+            + (gameRow.game.favorite ? (gameRow.game.update ? "  " : "") + "\uf005" : "")
+          color: gameRow.game.update ? root.stYellow : root.dimFg
+        }
       }
 
-      Text {
+      Caption {
         width: parent.width
         visible: text !== ""
-        textFormat: Text.PlainText
         text: root.stDeals ? root.dealCaption(gameRow.game) : root.stLocal ? root.localCaption(gameRow.game) : root.rowCaption(gameRow.game)
-        color: root.dimFg
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
         elide: Text.ElideRight
       }
     }
@@ -2239,13 +3064,9 @@ Panel {
     default property alias content: holder.data
     implicitHeight: Math.max(labeledText.implicitHeight, holder.childrenRect.height)
 
-    Text {
+    Caption {
       id: labeledText
-      textFormat: Text.PlainText
       text: labeled.label
-      color: root.dimFg
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
       font.bold: true
       width: root.labelWidth - Style.space(6)
       elide: Text.ElideRight
@@ -2279,13 +3100,9 @@ Panel {
     foreground: root.fg
     outline: true
 
-    Text {
+    Caption {
       id: sliderLabel
-      textFormat: Text.PlainText
       text: sliderRow.label
-      color: root.dimFg
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
       font.bold: true
       width: root.labelWidth - Style.space(6)
       elide: Text.ElideRight
@@ -2342,13 +3159,9 @@ Panel {
     readonly property string rowId: group ? "metrics-" + group.id : ""
     implicitHeight: Math.max(groupLabel.implicitHeight, chips.implicitHeight)
 
-    Text {
+    Caption {
       id: groupLabel
-      textFormat: Text.PlainText
       text: groupRow.group ? strings.t("group." + groupRow.group.id) : ""
-      color: root.dimFg
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
       font.bold: true
       width: root.labelWidth - Style.space(6)
       elide: Text.ElideRight
@@ -2367,16 +3180,13 @@ Panel {
       Repeater {
         model: groupRow.group ? groupRow.group.metrics : []
 
-        Button {
+        PillButton {
           id: chip
           required property string modelData
           required property int index
           text: strings.t("metric." + modelData)
           selected: root.config.metrics.indexOf(modelData) !== -1
-          bordered: true
           foreground: root.fg
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
           horizontalPadding: Style.spacing.sm
           hasCursor: root.cursorOn(groupRow.rowId, index)
           onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(chip)

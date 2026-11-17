@@ -15,6 +15,19 @@ leaves the machine. Under the Steam root:
   appcache/appinfo.vdf                  each app's name, type and cover file
   appcache/librarycache/<appid>/        the covers Steam already downloaded
   userdata/<id>/config/localconfig.vdf  last played and time played
+  userdata/<id>/config/cloudstorage/    the Favorites collection
+  config/config.vdf                     a Proton version forced per game
+  config/loginusers.vdf                 the account's name on Steam
+  <library>/steamapps/compatdata/<id>/  the Proton version a game last ran with
+  <library>/steamapps/workshop/         workshop mods: their size and count
+
+With --deck APPID it prints that game's full Steam Deck report instead:
+the three ratings (Steam Deck, Steam Machine, SteamOS), when and on which
+build Valve tested it, every test result, and the configuration flags.
+
+With --sizes it prints each installed game's Proton prefix and shader cache
+size instead, which means walking those folders, so the panel asks for it
+less often.
 
 The VDF readers, the library list, the license cache and the package list
 are ported from omarchy-quick-steam by Rysen Winters (MIT, see
@@ -38,6 +51,11 @@ MAX_TEXT = 64 * 1024 * 1024
 MAX_BINARY = 256 * 1024 * 1024
 MAX_LICENSES = 16 * 1024 * 1024
 MAX_GAMES = 5000
+MAX_DLC = 300
+# EAppState bits in a manifest's StateFlags.
+UPDATE_REQUIRED = 0x2
+UPDATE_PAUSED = 0x200
+UPDATING = 0x100 | 0x400 | 0x100000 | 0x200000 | 0x400000   # running, started, downloading, staging, committing
 STEAMID64_BASE = 76561197960265728
 APPID = re.compile(r"^[0-9]{1,10}$")
 CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
@@ -251,22 +269,24 @@ def local_cover(root, appid, asset):
     return ""
 
 
-def deck_category(common):
-    """Steam Deck status: 0 unknown, 1 unsupported, 2 playable, 3 verified."""
-    value = as_int(child(common, "steam_deck_compatibility", "category"))
+def compat_rating(common, key):
+    """A steam_deck_compatibility rating, 0..3. For "category" (Steam Deck):
+    unknown, unsupported, playable, verified; for "steamos_compatibility":
+    unknown, unsupported, compatible."""
+    value = as_int(child(common, "steam_deck_compatibility", key))
     return value if 0 <= value <= 3 else 0
 
 
-def load_appinfo(root, wanted):
-    """{appid: (name, type, cover asset, Deck category)} from appinfo.vdf (format 0x07564429 or
-    0x07564428), for the app ids in wanted only. A truncated or half-written
-    file gives what was read before the damage."""
+def appinfo_index(root):
+    """(buf, strings, {appid: offset}) for appinfo.vdf (format 0x07564429 or
+    0x07564428). A truncated or half-written file gives what was indexed
+    before the damage."""
     buf = read_file(os.path.join(root, "appcache/appinfo.vdf"), MAX_BINARY)
-    apps = {}
-    if not buf or len(buf) < 16 or not wanted:
-        return apps
+    index, strings = {}, None
+    if not buf or len(buf) < 16:
+        return buf, strings, index
     magic = struct.unpack_from("<I", buf, 0)[0]
-    strings, pos = None, 8
+    pos = 8
     try:
         # Newer files keep every key in a string table at the end.
         if magic == 0x07564429:
@@ -278,23 +298,61 @@ def load_appinfo(root, wanted):
                 strings.append(value)
             pos = 16
         elif magic != 0x07564428:
-            return apps
+            return buf, strings, index
         while pos + 8 <= len(buf):
             appid, size = struct.unpack_from("<II", buf, pos)
             if appid == 0:
                 break
-            if appid in wanted:
-                try:
-                    kv, _ = parse_binary_kv(buf, pos + 8 + 60, strings)
-                    common = child(kv, "appinfo", "common") or child(kv, "common")
-                    if common:
-                        apps[appid] = (printable(child(common, "name")), str(child(common, "type")).lower(),
-                                       capsule_asset(common), deck_category(common))
-                except (ValueError, IndexError, struct.error):
-                    pass
+            index[appid] = pos + 8 + 60
             pos += 8 + size
     except (ValueError, IndexError, struct.error):
         pass
+    return buf, strings, index
+
+
+def id_list(value):
+    return [int(v) for v in str(value or "").split(",") if v.strip().isdigit()] if isinstance(value, str) else []
+
+
+# What load_appinfo() gives an app it couldn't read.
+NO_APP = {"name": "", "type": "", "asset": "", "deck": 0, "steamos": 0, "oslist": "", "dlc": [], "depots": {}}
+
+
+def app_entry(body):
+    """One app's appinfo node, cut to what the page shows: name, type, cover
+    asset, the Deck and SteamOS ratings, the platforms, the DLC ids, and each
+    depot's (DLC id, platforms)."""
+    common = child(body, "common")
+    depots = {}
+    for depot, info in (child(body, "depots") or {}).items():
+        if depot.isdigit() and isinstance(info, dict):
+            depots[int(depot)] = (as_int(child(info, "dlcappid")), str(child(info, "config", "oslist") or ""))
+    return {
+        "name": printable(child(common, "name")),
+        "type": str(child(common, "type")).lower(),
+        "asset": capsule_asset(common),
+        "deck": compat_rating(common, "category"),
+        "steamos": compat_rating(common, "steamos_compatibility"),
+        "oslist": str(child(common, "oslist") or ""),
+        "dlc": id_list(child(body, "extended", "listofdlc"))[:MAX_DLC],
+        "depots": depots,
+    }
+
+
+def load_appinfo(root, wanted, index=None):
+    """{appid: app_entry()} for the app ids in wanted only."""
+    buf, strings, offsets = index or appinfo_index(root)
+    apps = {}
+    for appid in wanted:
+        if appid not in offsets:
+            continue
+        try:
+            kv, _ = parse_binary_kv(buf, offsets[appid], strings)
+            body = child(kv, "appinfo") or kv
+            if child(body, "common"):
+                apps[appid] = app_entry(body)
+        except (ValueError, IndexError, struct.error, RecursionError):
+            pass
     return apps
 
 
@@ -504,6 +562,209 @@ def game_folder(library_path, installdir):
     return path if os.path.isdir(path) and not os.path.islink(path) else ""
 
 
+def update_state(state, workshop=None):
+    """("" | "required" | "downloading" | "paused" | "mods", percent done)."""
+    flags = as_int(child(state, "StateFlags"))
+    build, target = as_int(child(state, "buildid")), as_int(child(state, "TargetBuildID"))
+    total, done = as_int(child(state, "BytesToDownload")), as_int(child(state, "BytesDownloaded"))
+    if flags & UPDATE_PAUSED:
+        kind = "paused"
+    elif flags & UPDATING:
+        kind = "downloading"
+    elif flags & UPDATE_REQUIRED or (target and target != build):
+        kind = "required"
+    elif child(workshop, "NeedsUpdate") == "1" or child(workshop, "NeedsDownload") == "1":
+        kind = "mods"
+    else:
+        return ["", 0]
+    percent = max(0, min(100, done * 100 // total)) if kind in ("downloading", "paused") and total > 0 else 0
+    return [kind, percent]
+
+
+def platform(appid, local, info, forced):
+    """("linux" | "proton" | "windows" | "", the Proton build it last ran with).
+    A game is native when an installed depot is for Linux; it runs through
+    Proton when it has a prefix or a forced tool. Not installed: from its
+    platform list."""
+    info = info or NO_APP
+    ran = ""
+    if local:
+        prefix = os.path.join(local["path"], "steamapps/compatdata", str(appid))
+        version = read_file(os.path.join(prefix, "version"), 4096)
+        if version:
+            ran = printable(version.decode("utf-8", "replace").splitlines()[0] if version.strip() else "", 40)
+            config = read_file(os.path.join(prefix, "config_info"), 64 * 1024)
+            lines = config.decode("utf-8", "replace").splitlines() if config else []
+            tool = lines[1].split("/files/")[0] if len(lines) > 1 and "/files/" in lines[1] else ""
+            name = printable(os.path.basename(tool), 60)
+            if name:
+                ran = name + " " + ran if ran else name
+        installed_os = [info["depots"].get(d, (0, ""))[1] for d in local["depots"]]
+        if any("linux" in os_ for os_ in installed_os) and not forced:
+            return "linux", ""
+        if ran or forced or not any("linux" in os_ for os_ in installed_os):
+            return "proton", ran
+        return "", ""
+    oslist = info["oslist"].split(",")
+    if "linux" in oslist:
+        return "linux", ""
+    return ("windows", "") if "windows" in oslist else ("", "")
+
+
+def forced_tools(root):
+    """{appid: tool name} from config.vdf's CompatToolMapping. Entry 0 is the
+    default for every game and isn't a per-game choice."""
+    config = load_text_vdf(os.path.join(root, "config/config.vdf"))
+    mapping = child(config, "InstallConfigStore", "Software", "Valve", "Steam", "CompatToolMapping")
+    out = {}
+    for appid, info in (mapping or {}).items():
+        name = printable(child(info, "name"), 60) if isinstance(info, dict) else ""
+        if APPID.match(appid) and appid != "0" and name:
+            out[int(appid)] = name
+    return out
+
+
+def favorites(root, user):
+    """App ids in the account's Favorites collection, from Steam's cloud
+    storage cache; local edits not yet synced (.modified.json) win."""
+    folder = os.path.join(root, "userdata", user or "", "config/cloudstorage")
+    entry = None
+    for name in ("cloud-storage-namespace-1.json", "cloud-storage-namespace-1.modified.json"):
+        raw = read_file(os.path.join(folder, name), 16 * 1024 * 1024) if user else None
+        try:
+            pairs = json.loads(raw) if raw else []
+        except ValueError:
+            pairs = []
+        for pair in pairs if isinstance(pairs, list) else []:
+            if isinstance(pair, list) and len(pair) == 2 and pair[0] == "user-collections.favorite" and isinstance(pair[1], dict):
+                entry = pair[1]
+    if not entry or entry.get("is_deleted"):
+        return set()
+    try:
+        value = json.loads(entry.get("value") or "{}")
+    except (ValueError, TypeError):
+        return set()
+    added = value.get("added") if isinstance(value, dict) else None
+    return {a for a in added if isinstance(a, int) and a > 0} if isinstance(added, list) else set()
+
+
+def steam_status(root, pidfile, proc="/proc"):
+    """{"running", "persona"}: Steam is running when its pid file names a
+    live steam process; persona is the last account's name on Steam."""
+    running = False
+    raw = read_file(pidfile, 64) if pidfile else None
+    pid = as_int(raw.decode("ascii", "replace").strip() if raw else "", 0)
+    if pid > 0:
+        comm = read_file(os.path.join(proc, str(pid), "comm"), 64)
+        running = bool(comm) and comm.decode("utf-8", "replace").strip().startswith("steam")
+    login = child(load_text_vdf(os.path.join(root, "config/loginusers.vdf")), "users")
+    persona = ""
+    for info in (login or {}).values():
+        if isinstance(info, dict) and (child(info, "MostRecent") == "1" or not persona):
+            persona = printable(child(info, "PersonaName"), 64) or persona
+    return {"running": running, "persona": persona}
+
+
+def dlc_list(appid, info, local, owned, names):
+    """[{id, name, state}] for a game's DLC: "installed" (its depot is on
+    disk), "owned" (bought; nothing to download, or not downloaded) or
+    "missing" (not bought). Names come from appinfo; unnamed ones are left out."""
+    if not info:
+        return []
+    depots = info["depots"]
+    on_disk = set()
+    if local:
+        for depot, dlc in local["depots"].items():
+            on_disk.add(dlc or depots.get(depot, (0, ""))[0])
+    out = []
+    for dlc in info["dlc"]:
+        name = names.get(dlc, "")
+        if not name:
+            continue
+        has_depot = any(d[0] == dlc for d in depots.values())
+        state = "missing" if dlc not in owned else "installed" if local and has_depot and dlc in on_disk else "owned"
+        out.append({"id": str(dlc), "name": name, "state": state})
+    return out
+
+
+DECK_RESULT = re.compile(r"^#(?:SteamDeckVerified|SteamMachine|SteamOS)_TestResult_([A-Za-z0-9_]{1,80})$")
+DECK_KEY = re.compile(r"^[a-z0-9_]{1,60}$")
+
+
+def deck_results(node):
+    """[{result, display}] in Valve's order. display: 1 note, 2 fail, 3 warning, 4 pass."""
+    out = []
+    items = node.items() if isinstance(node, dict) else []
+    for _, test in sorted(items, key=lambda kv: as_int(kv[0], 999)):
+        m = DECK_RESULT.match(str(child(test, "token"))) if isinstance(test, dict) else None
+        display = as_int(child(test, "display")) if isinstance(test, dict) else 0
+        if m and 1 <= display <= 4:
+            out.append({"result": m.group(1), "display": display})
+    return out[:40]
+
+
+def deck_report(root, appid):
+    """The full steam_deck_compatibility block for one app, or None."""
+    buf, strings, offsets = appinfo_index(root)
+    if appid not in offsets:
+        return None
+    try:
+        kv, _ = parse_binary_kv(buf, offsets[appid], strings)
+    except (ValueError, IndexError, struct.error, RecursionError):
+        return None
+    deck = child(kv, "appinfo", "common", "steam_deck_compatibility") or child(kv, "common", "steam_deck_compatibility")
+    if not deck:
+        return None
+    rating = lambda key: max(0, min(3, as_int(child(deck, key))))
+    config = {}
+    for key, value in (child(deck, "configuration") or {}).items():
+        if DECK_KEY.match(key) and not isinstance(value, dict) and len(config) < 40:
+            config[key] = printable(str(value), 60)
+    build = as_int(child(deck, "tested_build_id"))
+    return {
+        "deck": rating("category"),
+        "machine": rating("steam_machine_compatibility"),
+        "steamos": rating("steamos_compatibility"),
+        "testedAt": max(0, as_int(child(deck, "test_timestamp"))),
+        "testedBuild": str(build) if build > 0 else "",
+        "results": {
+            "deck": deck_results(child(deck, "tests")),
+            "machine": deck_results(child(deck, "steam_machine_tests")),
+            "steamos": deck_results(child(deck, "steamos_tests")),
+        },
+        "config": config,
+    }
+
+
+def walk_size(path):
+    """Bytes in the regular files under path, links not followed."""
+    total, stack = 0, [path]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as it:
+                for e in it:
+                    try:
+                        if e.is_dir(follow_symlinks=False):
+                            stack.append(e.path)
+                        elif e.is_file(follow_symlinks=False):
+                            total += e.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    return total
+
+
+def extra_sizes(root):
+    """{appid: [prefix bytes, shader cache bytes]} for the installed games."""
+    out = {}
+    for appid, game in installed_games(libraries(root)).items():
+        base = os.path.join(game["path"], "steamapps")
+        out[str(appid)] = [walk_size(os.path.join(base, "compatdata", str(appid))),
+                           walk_size(os.path.join(base, "shadercache", str(appid)))]
+    return out
+
+
 def installed_games(libs):
     found = {}
     for index, lib in enumerate(libs):
@@ -512,37 +773,58 @@ def installed_games(libs):
             appid = as_int(child(state, "appid"), -1)
             if appid <= 0 or appid in found:
                 continue
+            workshop = load_text_vdf(os.path.join(lib["path"], "steamapps/workshop/appworkshop_%d.acf" % appid))
+            workshop = child(workshop, "AppWorkshop")
+            depots = child(state, "InstalledDepots") or {}
             found[appid] = {
                 "library": index,
+                "path": lib["path"],
                 "name": printable(child(state, "name")),
                 "size": max(0, as_int(child(state, "SizeOnDisk"))),
                 "lastPlayed": max(0, as_int(child(state, "LastPlayed"))),
                 "folder": game_folder(lib["path"], child(state, "installdir")),
+                "build": str(as_int(child(state, "buildid"))) if as_int(child(state, "buildid")) > 0 else "",
+                "updated": max(0, as_int(child(state, "LastUpdated"))),
+                "update": update_state(state, workshop),
+                "depots": {int(d): as_int(child(v, "dlcappid")) for d, v in depots.items()
+                           if d.isdigit() and isinstance(v, dict)},
+                "workshop": max(0, as_int(child(workshop, "SizeOnDisk"))),
+                "mods": len([k for k in (child(workshop, "WorkshopItemsInstalled") or {}) if k.isdigit()]),
             }
     return found
 
 
-def library(root):
+def library(root, pidfile=None):
     libs = libraries(root)
     installed = installed_games(libs)
     user = current_user(root)
     owned = load_owned(root, load_licenses(root, user))
-    appinfo = load_appinfo(root, owned | set(installed))
+    index = appinfo_index(root)
+    appinfo = load_appinfo(root, owned | set(installed), index)
     played = load_played(root, user)
+    forced = forced_tools(root)
+    favorite = favorites(root, user)
 
     # Installed tools (Proton, runtimes, redistributables) aren't games.
-    installed = {a: g for a, g in installed.items() if a not in appinfo or appinfo[a][1] == "game"}
+    installed = {a: g for a, g in installed.items() if a not in appinfo or appinfo[a]["type"] == "game"}
+
+    listed = sorted({a for a in owned if appid_is_game(appinfo, a)} | set(installed))
+    # DLC names: the DLC entries of the listed games, parsed only now.
+    dlc_ids = {d for a in listed if a in appinfo for d in appinfo[a]["dlc"]}
+    names = {a: v["name"] for a, v in load_appinfo(root, dlc_ids, index).items()}
 
     games = []
-    for appid in sorted({a for a in owned if appid_is_game(appinfo, a)} | set(installed)):
+    for appid in listed:
         local = installed.get(appid)
-        info = appinfo.get(appid) or ("", "", "", 0)
-        name = info[0] or (local or {}).get("name", "")
+        info = appinfo.get(appid) or NO_APP
+        name = info["name"] or (local or {}).get("name", "")
         if not name:
             continue
         last, minutes, options = played.get(appid, (0, 0, ""))
         if local and local["lastPlayed"] > last:
             last = local["lastPlayed"]
+        kind, runs_with = platform(appid, local, appinfo.get(appid), forced.get(appid, ""))
+        update = local["update"] if local else ["", 0]
         games.append({
             "id": str(appid),
             "name": name,
@@ -551,10 +833,22 @@ def library(root):
             "size": local["size"] if local else 0,
             "lastPlayed": last,
             "playtime": minutes,
-            "cover": local_cover(root, appid, info[2]),
-            "deck": info[3],
+            "cover": local_cover(root, appid, info["asset"]),
+            "deck": info["deck"],
+            "steamos": info["steamos"],
             "folder": local["folder"] if local else "",
             "launchOptions": options,
+            "build": local["build"] if local else "",
+            "updated": local["updated"] if local else 0,
+            "update": update[0],
+            "progress": update[1],
+            "workshop": local["workshop"] if local else 0,
+            "mods": local["mods"] if local else 0,
+            "platform": kind,
+            "proton": runs_with,
+            "forcedTool": forced.get(appid, ""),
+            "favorite": appid in favorite,
+            "dlc": dlc_list(appid, appinfo.get(appid), local, owned, names),
         })
         if len(games) >= MAX_GAMES:
             break
@@ -564,22 +858,37 @@ def library(root):
         game["drive"] = libs[game["library"]]["drive"] if game["installed"] else -1
         del game["library"]
     games.sort(key=lambda g: g["name"].lower())
-    return {"ok": True, "uwsm": shutil.which("uwsm-app") is not None, "drives": disks, "games": games}
+    return {"ok": True, "uwsm": shutil.which("uwsm-app") is not None, "drives": disks, "games": games,
+            "steam": steam_status(root, pidfile)}
 
 
 def appid_is_game(appinfo, appid):
-    return appid in appinfo and appinfo[appid][1] == "game"
+    return appid in appinfo and appinfo[appid]["type"] == "game"
 
 
 def main():
     parser = argparse.ArgumentParser(description="Print the Steam library as JSON")
     parser.add_argument("--root", help="the Steam folder to read (default: found under ~)")
+    parser.add_argument("--sizes", action="store_true", help="print Proton prefix and shader cache sizes instead")
+    parser.add_argument("--deck", metavar="APPID", help="print one game's full Steam Deck report instead")
     args = parser.parse_args()
     root = os.path.realpath(args.root) if args.root else steam_root()
     if not root or not os.path.isdir(os.path.join(root, "steamapps")):
         print(json.dumps({"ok": False, "error": "steam-not-found"}))
         return
-    print(json.dumps(library(root), ensure_ascii=False, separators=(",", ":")))
+    if args.deck is not None:
+        if not APPID.match(args.deck):
+            print(json.dumps({"ok": False, "error": "bad-appid"}))
+            return
+        report = deck_report(root, int(args.deck))
+        print(json.dumps({"ok": True, "id": args.deck, "deck": report}, separators=(",", ":")))
+        return
+    if args.sizes:
+        print(json.dumps({"ok": True, "sizes": extra_sizes(root)}, separators=(",", ":")))
+        return
+    # Steam's pid file sits in ~/.steam; a --root fixture keeps its own.
+    pidfile = os.path.join(root, "steam.pid") if args.root else os.path.expanduser("~/.steam/steam.pid")
+    print(json.dumps(library(root, pidfile), ensure_ascii=False, separators=(",", ":")))
 
 
 if __name__ == "__main__":

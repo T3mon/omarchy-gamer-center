@@ -28,6 +28,17 @@ Item {
 
   readonly property var games: library ? library.games : []
   readonly property var drives: library ? library.drives : []
+  // { running, persona }: whether Steam runs, and the account's name on it.
+  readonly property var status: library ? library.steam : null
+  // { appid: [Proton prefix bytes, shader cache bytes] }, from --sizes.
+  property var sizes: ({})
+  property double sizesAt: 0
+
+  // Walks the prefixes and shader caches, so at most once a minute.
+  function refreshSizes() {
+    if (sizesProc.running || Date.now() - sizesAt < 60000) return
+    sizesProc.running = true
+  }
 
   function refresh() {
     if (readProc.running) refreshQueued = true
@@ -73,7 +84,58 @@ Item {
   }
 
   // The other games are read once up front too, so their tab shows a count.
-  onWatchersChanged: if (watchers > 0) { refresh(); if (!others) refreshOthers() }
+  onWatchersChanged: if (watchers > 0) { refresh(); refreshSizes(); if (!others) refreshOthers() }
+
+  Process {
+    id: sizesProc
+    command: ["python3", "-I", root.helper, "--sizes"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var data
+        try { data = JSON.parse(text) } catch (e) { data = null }
+        var cleaned = Library.cleanSizes(data)
+        if (cleaned) { root.sizes = cleaned; root.sizesAt = Date.now() }
+      }
+    }
+  }
+
+  // ---- One game's full Steam Deck report, read when the panel asks.
+
+  // The cleaned report ({ id, none, deck, machine, steamos, ... }) or null.
+  property var deckReport: null
+  // "idle", "reading", "ready" or "failed".
+  property string deckPhase: "idle"
+  property string deckWanted: ""
+
+  function refreshDeck(id) {
+    if (!Library.validId(id)) return
+    deckWanted = id
+    if (deckReport && deckReport.id === id) { deckPhase = "ready"; return }
+    deckPhase = "reading"
+    // One reading at a time: a game picked mid-reading is read when it ends.
+    if (!deckProc.running) startDeck()
+  }
+
+  function startDeck() {
+    deckProc.command = ["python3", "-I", root.helper, "--deck", deckWanted]
+    deckProc.running = true
+  }
+
+  Process {
+    id: deckProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var data
+        try { data = JSON.parse(text) } catch (e) { data = null }
+        var cleaned = Library.cleanDeck(data)
+        if (!cleaned) root.deckPhase = "failed"
+        else if (cleaned.id === root.deckWanted) { root.deckReport = cleaned; root.deckPhase = "ready" }
+        else Qt.callLater(root.startDeck)
+      }
+    }
+  }
 
   // ---- Other games: app-menu entries in the Game category.
 
@@ -217,6 +279,6 @@ Item {
     interval: 5000
     repeat: true
     running: root.watchers > 0
-    onTriggered: root.refresh()
+    onTriggered: { root.refresh(); root.refreshSizes() }
   }
 }

@@ -73,16 +73,21 @@ def kv_bytes(node, strings=None):
     return out + b"\x08"
 
 
-def appinfo_bytes(apps, covers=None, decks=None):
-    """covers: app id -> the capsule file appinfo names for it. decks: app id -> Deck category."""
+def appinfo_bytes(apps, covers=None, decks=None, extra=None):
+    """covers: app id -> the capsule file appinfo names for it. decks: app id -> Deck category.
+    extra: app id -> more keys for the appinfo node (depots, extended) and "oslist"."""
     strings, body = [], b""
     for appid, (name, kind) in apps.items():
+        more = dict((extra or {}).get(appid, {}))
         common = {"name": name, "type": kind}
+        if "oslist" in more:
+            common["oslist"] = more.pop("oslist")
         if covers and appid in covers:
             common["library_assets_full"] = {"library_capsule": {"image": {"english": covers[appid]}}}
         if decks and appid in decks:
-            common["steam_deck_compatibility"] = {"category": decks[appid], "tests": {"0": {"display": 4}}}
-        kv = kv_bytes({"appinfo": {"appid": appid, "common": common}}, strings)
+            block = decks[appid]
+            common["steam_deck_compatibility"] = block if isinstance(block, dict) else {"category": block, "tests": {"0": {"display": 4}}}
+        kv = kv_bytes({"appinfo": dict({"appid": appid, "common": common}, **more)}, strings)
         body += struct.pack("<II", appid, 60 + len(kv)) + b"\0" * 60 + kv
     body += struct.pack("<I", 0)
     table = 16 + len(body)
@@ -144,9 +149,10 @@ class FakeSteam:
         self.write_bytes("appcache/packageinfo.vdf", packageinfo_bytes(PACKAGES))
         self.write_bytes("userdata/%d/config/licensecache" % ACCOUNT, licensecache_bytes(LICENSES, ACCOUNT))
 
-    def manifest(self, library, appid, name, size, last=0, installdir=None):
+    def manifest(self, library, appid, name, size, last=0, installdir=None, **more):
         path = os.path.join(library, "steamapps", "appmanifest_%d.acf" % appid)
         state = {"appid": appid, "name": name, "StateFlags": 4, "SizeOnDisk": size, "LastPlayed": last}
+        state.update(more)
         if installdir is not None:
             state["installdir"] = installdir
         with open(path, "w") as handle:
@@ -283,6 +289,114 @@ class SteamLibraryTest(unittest.TestCase):
         self.assertEqual(games["RimWorld"]["folder"], "")
         for bad in ("..", ".", "", "a/../../x", "x\n", "Missing", None, 5):
             self.assertEqual(steam.game_folder(self.fake.root, bad), "")
+
+    def test_build_update_and_workshop_come_from_the_manifests(self):
+        self.fake.manifest(self.fake.root, MANOR, "Manor Lords", 100, buildid=26185246, LastUpdated=1794746039,
+                           StateFlags=6, TargetBuildID=26185300)
+        self.fake.manifest(self.fake.extra, TEAMFIGHT, "Teamfight Manager", 100, StateFlags=4 | 0x100000,
+                           BytesToDownload=200, BytesDownloaded=50)
+        self.fake.write_bytes("steamapps/workshop/appworkshop_%d.acf" % MANOR, text_vdf("AppWorkshop", {
+            "SizeOnDisk": 5000, "NeedsUpdate": "1",
+            "WorkshopItemsInstalled": {"1": {"size": 1}, "2": {"size": 2}, "x": {}}}).encode())
+        games = self.games()
+        manor, team = games["Manor Lords"], games["Teamfight Manager"]
+        self.assertEqual((manor["build"], manor["updated"], manor["update"], manor["workshop"], manor["mods"]),
+                         ("26185246", 1794746039, "required", 5000, 2))
+        self.assertEqual((team["update"], team["progress"], team["build"]), ("downloading", 25, ""))
+        self.assertEqual(games["RimWorld"]["update"], "")
+        self.assertEqual(steam.update_state({"StateFlags": "4"}, {"NeedsDownload": "1"}), ["mods", 0])
+        self.assertEqual(steam.update_state({"StateFlags": str(4 | 0x200), "BytesToDownload": "10",
+                                             "BytesDownloaded": "10"}), ["paused", 100])
+
+    def test_linux_native_or_proton(self):
+        extra = {MANOR: {"oslist": "windows", "depots": {"1363081": {"config": {"oslist": "windows"}}}},
+                 TEAMFIGHT: {"oslist": "windows,linux", "depots": {"1372811": {"config": {"oslist": "linux"}}}},
+                 RIMWORLD: {"oslist": "windows,macos,linux"}}
+        self.fake.write_bytes("appcache/appinfo.vdf", appinfo_bytes(APPS, extra=extra))
+        self.fake.manifest(self.fake.root, MANOR, "Manor Lords", 1, InstalledDepots={"1363081": {"size": 1}})
+        self.fake.manifest(self.fake.extra, TEAMFIGHT, "Teamfight Manager", 1, InstalledDepots={"1372811": {"size": 1}})
+        prefix = os.path.join(self.fake.root, "steamapps/compatdata/%d" % MANOR)
+        os.makedirs(prefix)
+        Path(prefix, "version").write_text("11.0-100\n")
+        Path(prefix, "config_info").write_text("11.0-100\n/x/steamapps/common/Proton - Experimental/files/share/fonts/\n")
+        games = self.games()
+        self.assertEqual((games["Manor Lords"]["platform"], games["Manor Lords"]["proton"]),
+                         ("proton", "Proton - Experimental 11.0-100"))
+        self.assertEqual((games["Teamfight Manager"]["platform"], games["Teamfight Manager"]["proton"]), ("linux", ""))
+        self.assertEqual(games["RimWorld"]["platform"], "linux")
+        self.fake.write("config/config.vdf", text_vdf("InstallConfigStore", {"Software": {"Valve": {"Steam": {
+            "CompatToolMapping": {"0": {"name": "proton_9"}, str(TEAMFIGHT): {"name": "GE-Proton9-20\x07"}}}}}}))
+        team = self.games()["Teamfight Manager"]
+        self.assertEqual((team["platform"], team["forcedTool"]), ("proton", "GE-Proton9-20"))
+        self.assertEqual(self.games()["Manor Lords"]["forcedTool"], "")
+
+    def test_dlc_owned_installed_or_missing(self):
+        apps = {**APPS, 600: ("Missing DLC", "DLC"), 700: ("Unlock DLC", "DLC")}
+        extra = {RIMWORLD: {"extended": {"listofdlc": "%d,600,700,999" % DLC},
+                            "depots": {"5001": {"dlcappid": DLC}}}}
+        self.fake.write_bytes("appcache/appinfo.vdf", appinfo_bytes(apps, extra=extra))
+        packages = {**PACKAGES, 14: [700]}
+        self.fake.write_bytes("appcache/packageinfo.vdf", packageinfo_bytes(packages))
+        self.fake.write_bytes("userdata/%d/config/licensecache" % ACCOUNT, licensecache_bytes({**LICENSES, 14: 0}, ACCOUNT))
+        dlc = lambda: [(d["name"], d["state"]) for d in self.games()["RimWorld"]["dlc"]]
+        self.assertEqual(dlc(), [("Some DLC", "owned"), ("Missing DLC", "missing"), ("Unlock DLC", "owned")])
+        self.fake.manifest(self.fake.root, RIMWORLD, "RimWorld", 1, InstalledDepots={"5001": {"size": 1}})
+        self.assertEqual(dlc()[0], ("Some DLC", "installed"))
+
+    def test_favorites_come_from_the_collections_cache(self):
+        folder = "userdata/%d/config/cloudstorage/" % ACCOUNT
+        fav = lambda added: ["user-collections.favorite", {"key": "x", "value": json.dumps({"added": added})}]
+        self.fake.write_bytes(folder + "cloud-storage-namespace-1.json", json.dumps([fav([MANOR, "x"])]).encode())
+        self.assertEqual([n for n, g in self.games().items() if g["favorite"]], ["Manor Lords"])
+        self.fake.write_bytes(folder + "cloud-storage-namespace-1.modified.json", json.dumps([fav([RIMWORLD])]).encode())
+        self.assertEqual([n for n, g in self.games().items() if g["favorite"]], ["RimWorld"])
+        self.fake.write_bytes(folder + "cloud-storage-namespace-1.modified.json", b"not json")
+        self.assertEqual([n for n, g in self.games().items() if g["favorite"]], ["Manor Lords"])
+
+    def test_steam_status(self):
+        self.fake.write("config/loginusers.vdf", text_vdf("users", {STEAMID: {"PersonaName": "Temon\x07", "MostRecent": "1"}}))
+        proc = os.path.join(self.tmp.name, "proc")
+        os.makedirs(os.path.join(proc, "42"))
+        Path(proc, "42", "comm").write_text("steam\n")
+        pidfile = os.path.join(self.tmp.name, "steam.pid")
+        Path(pidfile).write_text("42\n")
+        self.assertEqual(steam.steam_status(self.fake.root, pidfile, proc), {"running": True, "persona": "Temon"})
+        Path(proc, "42", "comm").write_text("bash\n")
+        self.assertFalse(steam.steam_status(self.fake.root, pidfile, proc)["running"])
+        self.assertFalse(steam.steam_status(self.fake.root, os.path.join(self.tmp.name, "none"), proc)["running"])
+
+    def test_sizes_walk_the_prefix_and_shader_cache(self):
+        for part, size in (("compatdata", 300), ("shadercache", 20)):
+            folder = os.path.join(self.fake.root, "steamapps", part, str(MANOR), "sub")
+            os.makedirs(folder)
+            Path(folder, "f").write_bytes(b"x" * size)
+        sizes = steam.extra_sizes(self.fake.root)
+        self.assertEqual(sizes[str(MANOR)], [300, 20])
+        self.assertEqual(sizes[str(TEAMFIGHT)], [0, 0])
+
+    def test_deck_report_has_every_rating_test_and_setting(self):
+        block = {
+            "category": 2, "steam_machine_compatibility": 3, "steamos_compatibility": 2,
+            "test_timestamp": 1667865600, "tested_build_id": 9679726,
+            "tests": {"0": {"display": 3, "token": "#SteamDeckVerified_TestResult_InterfaceTextIsNotLegible"},
+                      "1": {"display": 4, "token": "#SteamDeckVerified_TestResult_DefaultConfigurationIsPerformant"},
+                      "2": {"display": 4, "token": "#Bad Token; rm -rf"}},
+            "steamos_tests": {"0": {"display": 1, "token": "#SteamOS_TestResult_GameStartupFunctional"}},
+            "configuration": {"small_text": 1, "recommended_runtime": "proton-stable", "Bad-Key": 1},
+        }
+        self.fake.write_bytes("appcache/appinfo.vdf", appinfo_bytes(APPS, decks={MANOR: block}))
+        report = steam.deck_report(self.fake.root, MANOR)
+        self.assertEqual((report["deck"], report["machine"], report["steamos"]), (2, 3, 2))
+        self.assertEqual((report["testedAt"], report["testedBuild"]), (1667865600, "9679726"))
+        self.assertEqual([t["result"] for t in report["results"]["deck"]],
+                         ["InterfaceTextIsNotLegible", "DefaultConfigurationIsPerformant"])
+        self.assertEqual(report["results"]["steamos"], [{"result": "GameStartupFunctional", "display": 1}])
+        self.assertEqual(report["results"]["machine"], [])
+        self.assertEqual(report["config"], {"small_text": "1", "recommended_runtime": "proton-stable"})
+        self.assertEqual(self.games()["Manor Lords"]["steamos"], 2)
+        self.assertEqual(self.games()["Teamfight Manager"]["steamos"], 0)
+        self.assertIsNone(steam.deck_report(self.fake.root, RIMWORLD))
+        self.assertIsNone(steam.deck_report(self.fake.root, 123456))
 
     def test_scramble_is_its_own_inverse(self):
         data = os.urandom(200)

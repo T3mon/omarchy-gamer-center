@@ -234,3 +234,78 @@ test("other games are cleaned, listed and launched by entry id only", () => {
   assert.equal(L.sortFor("recent", false, true), "name")
   assert.equal(L.sortFor("size", false, true), "size")
 })
+
+test("new library fields are cleaned and filters narrow the list", () => {
+  const data = reading()
+  Object.assign(data.games[0], { build: "26185246", updated: 1794746039, update: "downloading", progress: 140,
+    workshop: 100, mods: 3, platform: "proton", proton: "Proton\u0007 Experimental 11.0-100", forcedTool: "GE-Proton9",
+    favorite: true, dlc: [{ id: "9", name: "Zeta", state: "owned" }, { id: "8", name: "Alpha", state: "missing" },
+                          { id: "7", name: "Mid", state: "installed" }, { id: "x", name: "Bad", state: "owned" },
+                          { id: "6", name: "Odd", state: "stolen" }] })
+  Object.assign(data.games[1], { build: "12; rm", update: "hacked", platform: "mac", deck: 3, steamos: 2 })
+  Object.assign(data.games[2], { build: "5", update: "required", workshop: 99, favorite: true })
+  data.steam = { running: true, persona: "Temon\u0007" }
+  const c = plain(L.clean(data))
+  const [manor, team, rim] = c.games.sort((a, b) => a.id - b.id)
+  assert.deepEqual([manor.build, manor.update, manor.progress, manor.platform, manor.proton, manor.favorite],
+                   ["26185246", "downloading", 100, "proton", "Proton  Experimental 11.0-100", true])
+  assert.deepEqual(manor.dlc.map(d => [d.name, d.state]), [["Mid", "installed"], ["Zeta", "owned"], ["Alpha", "missing"]])
+  assert.deepEqual(plain(L.dlcCounts(manor.dlc)), { total: 3, owned: 2, installed: 1 })
+  assert.deepEqual([team.build, team.update, team.platform, team.steamos, manor.steamos], ["", "", "", "compatible", "unknown"])
+  assert.deepEqual([rim.build, rim.update, rim.workshop, rim.favorite], ["", "", 0, true])
+  assert.deepEqual(c.steam, { running: true, persona: "Temon" })
+  assert.deepEqual(plain(L.clean(reading())).steam, { running: false, persona: "" })
+
+  const sizes = L.cleanSizes({ ok: true, sizes: { "1": [1000, 5], "x": [1, 1], "2": "bad" } })
+  assert.deepEqual(plain(sizes), { "1": [1000, 5] })
+  assert.equal(L.fullSize(manor, sizes), 50 + 100 + 1000 + 5)
+  assert.deepEqual(plain(L.list(c.games, true, "size", "", null, sizes)).map(g => g.id), ["1", "2"])
+
+  const ids = (installed, f) => plain(L.list(c.games, installed, "name", "", f)).map(g => g.id)
+  assert.deepEqual(ids(true, { favorites: true }), ["1"])
+  assert.deepEqual(ids(true, { updates: true }), ["1"])
+  assert.deepEqual(ids(true, { runs: ["compatible"] }), ["2"])
+  assert.deepEqual(ids(false, { played: "never" }), ["4"])
+  assert.deepEqual(ids(false, { played: "played", favorites: true }), ["3"])
+  assert.deepEqual(ids(false, { played: "nonsense" }), ["4", "3"])
+  assert.equal(L.countInstalled(c.games, false, "", { favorites: true }), 1)
+})
+
+test("runs-on filters match any ticked choice, and facets count each choice", () => {
+  const g = (id, more) => Object.assign({ id, name: "G" + id, installed: true, lastPlayed: 0, playtime: 0,
+    platform: "proton", steamos: "unknown", favorite: false, update: "" }, more)
+  const games = [g("1", { platform: "linux", steamos: "compatible", playtime: 5 }), g("2", { steamos: "compatible", favorite: true }),
+                 g("3", { steamos: "unsupported", favorite: true }), g("4", { platform: "linux", lastPlayed: 9 }),
+                 g("5", { installed: false, steamos: "compatible" })]
+  const ids = f => plain(L.list(games, true, "name", "", f)).map(x => x.id)
+  assert.deepEqual(ids({ runs: ["linux"] }), ["1", "4"])
+  assert.deepEqual(ids({ runs: ["compatible", "unsupported"] }), ["1", "2", "3"])
+  assert.deepEqual(ids({ runs: ["linux"], played: "played" }), ["1", "4"])
+  assert.deepEqual(ids({ runs: ["unknown", "bogus"] }), ["4"])
+  assert.deepEqual(plain(L.cleanFilter({ runs: ["bogus", "linux", "linux"], played: "x" })),
+                   { played: "all", runs: ["linux"], favorites: false, updates: false })
+  assert.equal(L.activeFilters({ runs: ["linux", "unknown"], played: "never", favorites: true }), 4)
+  assert.deepEqual(plain(L.toggleRun(["unknown"], "linux")), ["linux", "unknown"])
+  assert.deepEqual(plain(L.toggleRun(["linux", "unknown"], "linux")), ["unknown"])
+  // Each group counts with the other groups applied, not its own.
+  const f = plain(L.facets(games, true, "", { runs: ["linux"], played: "played" }))
+  assert.deepEqual(f.runs, { linux: 2, compatible: 1, unsupported: 0, unknown: 1 })
+  assert.deepEqual(f.played, { all: 2, played: 2, never: 0 })
+  assert.equal(f.favorites, 0)
+})
+
+test("the Deck report is cleaned and results read as sentences", () => {
+  assert.equal(L.cleanDeck({ ok: true, id: "x" }), null)
+  assert.deepEqual(plain(L.cleanDeck({ ok: true, id: "5", deck: null })), { id: "5", none: true })
+  const d = plain(L.cleanDeck({ ok: true, id: "5", deck: {
+    deck: 2, machine: 9, steamos: 2, testedAt: 1667865600, testedBuild: "9679726; x",
+    results: { deck: [{ result: "InterfaceTextIsNotLegible", display: 3 }, { result: "a b", display: 4 }, { result: "X", display: 7 }],
+               machine: "bad", steamos: [{ result: "GameStartupFunctional", display: 1 }] },
+    config: { small_text: "1", "Bad-Key": "1", recommended_runtime: "proton-stable\u0007" } } }))
+  assert.deepEqual([d.deck, d.machine, d.steamos, d.testedAt, d.testedBuild], ["playable", "unknown", 2, 1667865600, ""])
+  assert.deepEqual(d.results, { deck: [{ result: "InterfaceTextIsNotLegible", kind: "warning" }], machine: [],
+                                steamos: [{ result: "GameStartupFunctional", kind: "note" }] })
+  assert.deepEqual(d.config, [{ key: "small_text", value: "1" }, { key: "recommended_runtime", value: "proton-stable" }])
+  assert.equal(L.humanize("InterfaceTextIsNotLegible"), "Interface text is not legible")
+  assert.equal(L.humanize("SteamOSDoesNotSupport_VR"), "Steam os does not support vr")
+})
