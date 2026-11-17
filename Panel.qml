@@ -98,11 +98,11 @@ Panel {
   readonly property string stShownId: stGame ? stTab + ":" + stGame.id : ""
   onStShownIdChanged: { stDlcOpen = false; stDeckOpen = false }
   readonly property bool stHasDlc: stFiltered && !!stGame && !!stGame.dlc && stGame.dlc.length > 0
-  // Text buttons first, then the icon-only ones (folder, launch options).
+  // Text buttons first, then the icon-only ones (folder, Workshop, launch options).
   readonly property var stActions: !stGame ? [] : stDeals ? ["store"]
     : stLocal ? ["run"].concat(stGame.folder ? ["folder"] : [])
     : (stGame.installed ? ["run", "uninstall"] : ["install"])
-        .concat(stGame.folder ? ["folder"] : [], ["options"])
+        .concat(stGame.folder ? ["folder"] : [], stGame.hasWorkshop ? ["workshop"] : [], ["options"])
   // The theme's green and yellow, re-read each time the panel opens.
   property var stTheme: ({ green: "", yellow: "" })
   readonly property color stGreen: stTheme.green || fg
@@ -2011,14 +2011,14 @@ Panel {
                     PillButton {
                       required property int index
                       readonly property string action: root.stActions[index] || ""
-                      readonly property bool iconOnly: action === "folder" || action === "options"
+                      readonly property bool iconOnly: action === "folder" || action === "workshop" || action === "options"
                       readonly property color tint: root.actionColor(action)
                       text: iconOnly ? "" : strings.t("steam.action." + action)
                       tooltipText: !iconOnly ? ""
                         : action === "options" && stDetails.game.launchOptions
                           ? strings.t("steam.launchOptions").arg(stDetails.game.launchOptions)
                           : strings.t("steam.action." + action)
-                      iconText: ({ run: "", install: "", uninstall: "", folder: "", options: "", store: "" })[action] || ""
+                      iconText: ({ run: "", install: "", uninstall: "", folder: "", workshop: "󰐱", options: "", store: "" })[action] || ""
                       foreground: tint
                       accent: tint
                       hasCursor: root.cursorOn("st-actions", index)

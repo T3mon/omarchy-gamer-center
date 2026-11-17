@@ -89,6 +89,7 @@ test("steam links take only known actions and digit ids", () => {
   assert.equal(L.steamUrl("install", "1"), "steam://install/1")
   assert.equal(L.steamUrl("uninstall", "1"), "steam://uninstall/1")
   assert.equal(L.steamUrl("options", "1"), "steam://gameproperties/1")
+  assert.equal(L.steamUrl("workshop", "294100"), "steam://url/SteamWorkshopPage/294100")
   for (const [action, id] of [["run", "1; rm -rf ~"], ["run", ""], ["run", 5], ["run", "12345678901"],
                               ["open", "1"], ["toString", "1"], ["hasOwnProperty", "1"]]) {
     assert.equal(L.steamUrl(action, id), "")

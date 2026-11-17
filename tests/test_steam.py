@@ -75,13 +75,14 @@ def kv_bytes(node, strings=None):
 
 def appinfo_bytes(apps, covers=None, decks=None, extra=None):
     """covers: app id -> the capsule file appinfo names for it. decks: app id -> Deck category.
-    extra: app id -> more keys for the appinfo node (depots, extended) and "oslist"."""
+    extra: app id -> more keys for the appinfo node (depots, extended), "oslist" and "workshop_visible"."""
     strings, body = [], b""
     for appid, (name, kind) in apps.items():
         more = dict((extra or {}).get(appid, {}))
         common = {"name": name, "type": kind}
-        if "oslist" in more:
-            common["oslist"] = more.pop("oslist")
+        for key in ("oslist", "workshop_visible"):
+            if key in more:
+                common[key] = more.pop(key)
         if covers and appid in covers:
             common["library_assets_full"] = {"library_capsule": {"image": {"english": covers[appid]}}}
         if decks and appid in decks:
@@ -311,7 +312,7 @@ class SteamLibraryTest(unittest.TestCase):
     def test_linux_native_or_proton(self):
         extra = {MANOR: {"oslist": "windows", "depots": {"1363081": {"config": {"oslist": "windows"}}}},
                  TEAMFIGHT: {"oslist": "windows,linux", "depots": {"1372811": {"config": {"oslist": "linux"}}}},
-                 RIMWORLD: {"oslist": "windows,macos,linux"}}
+                 RIMWORLD: {"oslist": "windows,macos,linux", "workshop_visible": 1}}
         self.fake.write_bytes("appcache/appinfo.vdf", appinfo_bytes(APPS, extra=extra))
         self.fake.manifest(self.fake.root, MANOR, "Manor Lords", 1, InstalledDepots={"1363081": {"size": 1}})
         self.fake.manifest(self.fake.extra, TEAMFIGHT, "Teamfight Manager", 1, InstalledDepots={"1372811": {"size": 1}})
@@ -324,6 +325,7 @@ class SteamLibraryTest(unittest.TestCase):
                          ("proton", "Proton - Experimental 11.0-100"))
         self.assertEqual((games["Teamfight Manager"]["platform"], games["Teamfight Manager"]["proton"]), ("linux", ""))
         self.assertEqual(games["RimWorld"]["platform"], "linux")
+        self.assertEqual([games[n]["hasWorkshop"] for n in ("RimWorld", "Manor Lords")], [True, False])
         self.fake.write("config/config.vdf", text_vdf("InstallConfigStore", {"Software": {"Valve": {"Steam": {
             "CompatToolMapping": {"0": {"name": "proton_9"}, str(TEAMFIGHT): {"name": "GE-Proton9-20\x07"}}}}}}))
         team = self.games()["Teamfight Manager"]

@@ -315,13 +315,13 @@ def id_list(value):
 
 
 # What load_appinfo() gives an app it couldn't read.
-NO_APP = {"name": "", "type": "", "asset": "", "deck": 0, "steamos": 0, "oslist": "", "dlc": [], "depots": {}}
+NO_APP = {"name": "", "type": "", "asset": "", "deck": 0, "steamos": 0, "oslist": "", "dlc": [], "depots": {}, "workshop": False}
 
 
 def app_entry(body):
     """One app's appinfo node, cut to what the page shows: name, type, cover
-    asset, the Deck and SteamOS ratings, the platforms, the DLC ids, and each
-    depot's (DLC id, platforms)."""
+    asset, the Deck and SteamOS ratings, the platforms, the DLC ids, each
+    depot's (DLC id, platforms), and whether it has a Workshop."""
     common = child(body, "common")
     depots = {}
     for depot, info in (child(body, "depots") or {}).items():
@@ -336,6 +336,7 @@ def app_entry(body):
         "oslist": str(child(common, "oslist") or ""),
         "dlc": id_list(child(body, "extended", "listofdlc"))[:MAX_DLC],
         "depots": depots,
+        "workshop": str(child(common, "workshop_visible")) == "1",
     }
 
 
@@ -836,6 +837,7 @@ def library(root, pidfile=None):
             "cover": local_cover(root, appid, info["asset"]),
             "deck": info["deck"],
             "steamos": info["steamos"],
+            "hasWorkshop": info["workshop"],
             "folder": local["folder"] if local else "",
             "launchOptions": options,
             "build": local["build"] if local else "",

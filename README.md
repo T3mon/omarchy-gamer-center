@@ -73,7 +73,7 @@ The list shows each game's cover, when you last played it, its size, a star for 
 - **Size:** everything it takes and on which drive, broken down into the game, workshop mods (with their count), its Proton prefix and its shader cache.
 - **Runs with:** the Proton version it last ran with, or the one forced in Steam.
 - **Build:** its build id and when it was last updated.
-- **Buttons:** **Launch** (green), **Install** or **Uninstall** (red), which open Steam's own dialog where you pick the drive or confirm. Then a folder icon that opens the install folder, and a terminal icon that opens the game's Properties in Steam, where its launch options are set; hovering it shows the current ones (such as `mangohud %command%`).
+- **Buttons:** **Launch** (green), **Install** or **Uninstall** (red), which open Steam's own dialog where you pick the drive or confirm. Then a folder icon that opens the install folder, a Workshop icon (only for games that have one) that opens the game's Workshop in Steam, and a terminal icon that opens the game's Properties in Steam, where its launch options are set; hovering it shows the current ones (such as `mangohud %command%`).
 - **DLC:** a folded list, with how many you own and have installed. Open it to see each one as installed, owned or not owned.
 
 Click the SteamOS badge for the full compatibility report Valve stores for the game: the SteamOS, Steam Deck and Steam Machine ratings, when and on which build it was tested, every test result in plain words (such as "Some text is too small to read comfortably" or "Its anti-cheat doesn't support SteamOS"), and the settings Valve recorded, such as the recommended Proton, whether it needs the internet for single player, and HDR. Esc closes it.

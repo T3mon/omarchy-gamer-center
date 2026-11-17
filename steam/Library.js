@@ -7,7 +7,8 @@ var SORTS = ["recent", "name", "size"]
 var MAX_GAMES = 5000
 var MAX_DRIVES = 16
 var ACTIONS = { run: "steam://rungameid/", install: "steam://install/", uninstall: "steam://uninstall/",
-               options: "steam://gameproperties/", store: "steam://store/" }
+               options: "steam://gameproperties/", store: "steam://store/",
+               workshop: "steam://url/SteamWorkshopPage/" }
 
 function validId(id) {
   return typeof id === "string" && /^[0-9]{1,10}$/.test(id)
@@ -102,6 +103,7 @@ function clean(data) {
       cover: cover(g.cover),
       deck: deck(g.deck),
       steamos: steamos(g.steamos),
+      hasWorkshop: g.hasWorkshop === true,
       folder: installed ? folder(g.folder) : "",
       launchOptions: text(g.launchOptions, 500),
       build: installed && typeof g.build === "string" && /^[0-9]{1,12}$/.test(g.build) ? g.build : "",
